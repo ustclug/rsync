@@ -227,7 +227,7 @@ static int readlink_stat_realinfo(const char *path, STRUCT_STAT *stp, char *link
 	if(ret != 0){
 		return ret;
 	}
-	if( S_ISREG(stp->st_mode) && am_daemon && am_sender && lp_real_file_prefix(module_id) ){
+	if(S_ISREG(stp->st_mode) && am_daemon && am_sender && lp_real_file_prefix(module_id) && *lp_real_file_prefix(module_id) != '\0'){
 		int fd = open(path, O_RDONLY);
 		if(fd < 0){
 			return -1;

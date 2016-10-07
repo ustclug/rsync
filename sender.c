@@ -198,7 +198,7 @@ const char *get_real_filename(const char *fname)
 
 	static char real_fname[MAXPATHLEN+10];
 	const char *real_path_prefix = lp_real_file_prefix(module_id);
-	if(real_path_prefix){
+	if(real_path_prefix && *real_path_prefix != '\0'){
 		char now_cwd[MAXPATHLEN];
 		char *now_relative_cwd;
 		strlcpy(now_cwd, curr_dir, MAXPATHLEN);
