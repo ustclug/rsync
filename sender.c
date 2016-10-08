@@ -189,7 +189,7 @@ static void write_ndx_and_attrs(int f_out, int ndx, int iflags,
 #endif
 }
 
-const char *get_real_filename(const char *fname)
+static const char *get_real_filename(const char *fname)
 {
 
 	extern char *module_dir;
