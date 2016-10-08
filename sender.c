@@ -424,7 +424,16 @@ void send_files(int f_in, int f_out)
 		}
 		if(only_send_attrs){
 			close(fd);
-			char temp_file[]="tmp_XXXXXX";
+			char temp_file[MAXPATHLEN];
+			const char *dest_dir;
+			const char *env = getenv ("TMPDIR");
+			dest_dir = (env && *env ? env : "/tmp");
+			int ret = pathjoin(temp_file, MAXPATHLEN, dest_dir, "tmp_XXXXXX");
+			if (ret >= MAXPATHLEN) {
+				rsyserr(FERROR_XFER, EINVAL, "mkstemp failed");
+				free_sums(s);
+				exit_cleanup(RERR_FILEIO);
+			}
 			if((fd = mkstemp(temp_file))==-1){
 				rsyserr(FERROR_XFER, errno, "mkstemp failed");
 				free_sums(s);
