@@ -127,7 +127,86 @@ path = /storage/mirrors/barz
 
 I've tested the code with severial cases and the centos repo and it seems to work. However, there is a lot to do to improve. I need your advice and test!
 
-# Conversation in TUNA About it
+## A Test With CentOS Repo
+
+To analyze how many IO ops and read bytes are reduced by `rsync-huai`, a test has been carried out with CentOS repo. Here are the process and the result.
+
+Two copies of the whole CentOS repo were made, one of which was older and the other was newer. The newer one was put in `centos/` and the older was in `centos-old/`. Then `centos-old/` was copied twice, into `centos-old1/` and `centos-old2/`, after which, standard `rsync` and `rsync-huai` were used to sync the two old directories with the new one. Cgroup counters were used to account the IO ops and read bytes of the sender side, which in this case was the server. Before each test, `echo 3 > /proc/sys/vm/drop_caches` was used to drop all the cache.
+
+### Timestamps
+
+```
+% cat centos/timestamp.txt
+Fri Oct 14 11:36:01 UTC 2016
+% cat centos-old/timestamp.txt
+Sat Oct  1 06:36:01 UTC 2016
+```
+
+### Standard `rsync`
+
+```
+% cat /tmp/wrap.sh
+#!/bin/bash
+shift
+exec cgexec -g blkio:rsync "$@"
+% echo 3 > /proc/sys/vm/drop_caches
+% echo 1 > /sys/fs/cgroup/blkio/rsync/blkio.reset_stats
+% rsync -avP --delete :./centos/ ./centos-old1/ --rsh="/tmp/wrap.sh"
+sent 7,029,376 bytes  received 4,784,663,386 bytes  12,829,164.02 bytes/sec
+total size is 153,833,232,729  speedup is 32.10
+``` 
+
+### `rsync-huai`
+
+```
+% /path/to/rsync-huai -avP --only-send-attrs ./centos/ /dev/shm/centos-attrs/
+% cat /path/to/rsyncd.conf
+syslog facility = local1
+max verbosity = yes
+transfer logging = yes
+ignore nonreadable = yes
+uid = nobody
+gid = nogroup
+use chroot = no
+dont compress = *.tar *.ova *.dmg *.pkg *.gz *.tgz *.zip *.z *.xz *.rpm *.deb *.bz2 *.tbz *.lzma *.7z *.rar *.iso
+refuse options = checksum
+read only = true
+reverse lookup = no
+
+log format = %o [%a] %m %b %f %l
+
+[centos]
+path = /dev/shm/centos-attrs
+real file prefix = /path/to/centos
+% cgexec -g blkio:rsync /path/to/rsync-huai --daemon --config /path/to/rsyncd.conf --port 12345
+% echo 3 > /proc/sys/vm/drop_caches
+% echo 1 > /sys/fs/cgroup/blkio/rsync/blkio.reset_stats
+% rsync -avP --delete rsync://localhost:12345/centos/ ./centos-old2/
+sent 7,029,440 bytes  received 4,783,453,228 bytes  14,027,767.70 bytes/sec
+total size is 153,833,232,729  speedup is 32.11
+```
+
+To verify if `centos-old2/` was exactly the same with `centos-old1/`, the following check was performed.
+
+```
+% rsync -avP --delete --dry-run  ./centos-old1/ ./centos-old2/
+sending incremental file list
+
+sent 6,419,084 bytes  received 1,333 bytes  856,055.60 bytes/sec
+total size is 153,833,232,729  speedup is 23,960.01 (DRY RUN)
+```
+This indicated that there was no difference between them.
+
+### Result
+
+              |IO ops  | Read Bytes | Bytes/IO op
+ -------------|--------|------------|------------
+`rsync`       | 88846  | 6345285632 | 71418.92
+`rsync-huai`  | 83510  | 6323490816 | 75721.36
+ Difference   | -6.01% | -0.34%     | 6.02%
+
+
+# Conversation in TUNA About It
 
 We have internally talked about it, and I think it necessary to let you all know our ideas about it.
 
