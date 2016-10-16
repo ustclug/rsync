@@ -204,7 +204,23 @@ This indicated that there was no difference between them.
 `rsync`       | 88846  | 6345285632 | 71418.92
 `rsync-huai`  | 83510  | 6323490816 | 75721.36
  Difference   | -6.01% | -0.34%     | 6.02%
+ 
+### Test #2
 
+After this test, I've carried another one. The result is as below.
+
+```
+% cat centos/timestamp.txt
+Sat Oct  1 06:36:01 UTC 2016
+% cat centos-old/timestamp.txt
+Sun Oct 16 11:48:01 UTC 2016
+```
+
+              |IO ops  | Read Bytes | Bytes/IO op
+ -------------|--------|------------|------------
+`rsync`       |  10658 |   45445120 |  4263.94
+`rsync-huai`  |     51 |    1998848 | 39193.10
+ Difference   |-99.52% |    -95.60% |  819.17%
 
 # Conversation in TUNA About It
 
