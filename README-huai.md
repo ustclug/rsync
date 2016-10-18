@@ -211,7 +211,7 @@ After this test, I've carried another one. The result is as below.
 
 ```
 % cat centos/timestamp.txt
-Sat Oct  1 06:36:01 UTC 2016
+Fri Oct 14 11:36:01 UTC 2016
 % cat centos-old/timestamp.txt
 Sun Oct 16 11:48:01 UTC 2016
 ```
