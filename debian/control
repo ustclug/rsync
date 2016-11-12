@@ -4,7 +4,9 @@ Priority: optional
 Maintainer: Paul Slootman <paul@debian.org>
 Build-Depends: libpopt-dev,libacl1-dev,libattr1-dev
 Standards-Version: 3.9.8
-Homepage: http://rsync.samba.org/
+Homepage: http://github.com/tuna/rsync
+Vcs-Git: https://github.com/ustclug/rsync.git
+Vcs-Browser: https://github.com/ustclug/rsync.git
 
 Package: rsync
 Architecture: any
