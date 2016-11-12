@@ -61,13 +61,11 @@ build-stamp:
 	cp -p * debian/buildtree || true
 	cp -pr lib m4 popt support testsuite zlib debian/buildtree
 	# work around newer autoconf stuff (runstatedir)
-	touch debian/buildtree/aclocal.m4
-	@echo applying misc Debian patches
-	for i in debian/patches/*.patch debian/patches/*.diff; do if [ -s $$i ]; then echo "  $$i ..."; cat $$i | (cd debian/buildtree; patch -p1) || exit 1; fi; done
-	# work around newer autoconf stuff (runstatedir)
-	touch debian/buildtree/configure.sh debian/buildtree/config.h.in
+	touch debian/buildtree/config.h.in
 	@echo configuring
 	(cd debian/buildtree; ./configure --with-included-zlib=yes --prefix=/usr --mandir='$${prefix}/share/man' --build=$(DEB_BUILD_GNU_TYPE) --host=$(DEB_HOST_GNU_TYPE) LDFLAGS="$(LDFLAGS)")
+	@echo applying misc Debian patches
+	for i in debian/patches/*.patch debian/patches/*.diff; do if [ -s $$i ]; then echo "  $$i ..."; cat $$i | (cd debian/buildtree; patch -p1) || exit 1; fi; done
 	@echo building
 	$(MAKE) --directory=debian/buildtree CFLAGS="$(CFLAGS)" CPPFLAGS="$(CPPFLAGS)" LDFLAGS="$(LDFLAGS)" all
 	touch build-stamp
