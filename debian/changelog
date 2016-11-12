@@ -1,0 +1,5 @@
+rsync-huai (3.1.2+huai+git20161018-2) jessie; urgency=medium
+
+  * Initial release
+
+ -- Shengjing Zhu <i@zhsj.me>  Sat, 12 Nov 2016 18:00:00 +0000

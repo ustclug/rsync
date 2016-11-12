@@ -1,0 +1,11 @@
+[Unit]
+Description=Rsync Modified Version
+Documentation=man:rsync-huai(1)
+After=network.target
+ConditionPathExists=/etc/rsyncd-huai/%i.conf
+
+[Service]
+ExecStart=/usr/bin/rsync-huai --daemon --no-detach --config=/etc/rsyncd-huai/%i.conf
+
+[Install]
+WantedBy=multi-user.target
