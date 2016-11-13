@@ -2,7 +2,7 @@ Source: rsync-huai
 Section: net
 Priority: optional
 Maintainer: Shengjing Zhu <i@zhsj.me>
-Build-Depends: libpopt-dev, libacl1-dev, libattr1-dev, yodl, debhelper (>= 9), autotools-dev
+Build-Depends: libpopt-dev, libacl1-dev, libattr1-dev, yodl, debhelper (>= 9), autotools-dev, autoconf, automake, libtool
 Standards-Version: 3.9.8
 Homepage: http://github.com/tuna/rsync
 Vcs-Git: https://github.com/ustclug/rsync.git
