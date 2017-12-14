@@ -1,3 +1,9 @@
+rsync-huai (3.1.2+huai+git20171205~deb9u1) stretch; urgency=medium
+
+  * No-change rebuild against Debian Stretch.
+
+ -- Boyuan Yang <073plan@gmail.com>  Thu, 14 Dec 2017 21:06:25 +0800
+
 rsync-huai (3.1.2+huai+git20171204) unstable; urgency=medium
 
   * Merge upstream changes.
