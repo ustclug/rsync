@@ -37,6 +37,7 @@ extern int preserve_links;
 extern int preserve_devices;
 extern int preserve_specials;
 extern int checksum_seed;
+extern int saw_xattr_filter;
 
 #define RSYNC_XAL_INITIAL 5
 #define RSYNC_XAL_LIST_INITIAL 100
@@ -161,7 +162,7 @@ static ssize_t get_xattr_names(const char *fname)
 			arg = namebuf_len;
 		  got_error:
 			rsyserr(FERROR_XFER, errno,
-				"get_xattr_names: llistxattr(\"%s\",%s) failed",
+				"get_xattr_names: llistxattr(%s,%s) failed",
 				full_fname(fname), big_num(arg));
 			return -1;
 		}
@@ -197,7 +198,7 @@ static char *get_xattr_data(const char *fname, const char *name, size_t *len_ptr
 		if (errno == ENOTSUP || no_missing_error)
 			return NULL;
 		rsyserr(FERROR_XFER, errno,
-			"get_xattr_data: lgetxattr(\"%s\",\"%s\",0) failed",
+			"get_xattr_data: lgetxattr(%s,\"%s\",0) failed",
 			full_fname(fname), name);
 		return NULL;
 	}
@@ -214,12 +215,12 @@ static char *get_xattr_data(const char *fname, const char *name, size_t *len_ptr
 		if (len != datum_len) {
 			if (len == (size_t)-1) {
 				rsyserr(FERROR_XFER, errno,
-				    "get_xattr_data: lgetxattr(\"%s\",\"%s\",%ld)"
-				    " failed", full_fname(fname), name, (long)datum_len);
+				    "get_xattr_data: lgetxattr(%s,\"%s\",%ld) failed",
+				    full_fname(fname), name, (long)datum_len);
 			} else {
 				rprintf(FERROR_XFER,
-				    "get_xattr_data: lgetxattr(\"%s\",\"%s\",%ld)"
-				    " returned %ld\n", full_fname(fname), name,
+				    "get_xattr_data: lgetxattr(%s,\"%s\",%ld) returned %ld\n",
+				    full_fname(fname), name,
 				    (long)datum_len, (long)len);
 			}
 			free(ptr);
@@ -249,17 +250,18 @@ static int rsync_xal_get(const char *fname, item_list *xalp)
 		name_len = strlen(name) + 1;
 		list_len -= name_len;
 
+		if (saw_xattr_filter) {
+			if (name_is_excluded(name, NAME_IS_XATTR, ALL_FILTERS))
+				continue;
+		}
 #ifdef HAVE_LINUX_XATTRS
-		/* We always ignore the system namespace, and non-root
-		 * ignores everything but the user namespace. */
-		if (user_only ? !HAS_PREFIX(name, USER_PREFIX)
-			      : HAS_PREFIX(name, SYSTEM_PREFIX))
+		/* Choose between ignoring the system namespace or (non-root) ignoring any non-user namespace. */
+		else if (user_only ? !HAS_PREFIX(name, USER_PREFIX) : HAS_PREFIX(name, SYSTEM_PREFIX))
 			continue;
 #endif
 
 		/* No rsync.%FOO attributes are copied w/o 2 -X options. */
-		if (name_len > RPRE_LEN && name[RPRE_LEN] == '%'
-		 && HAS_PREFIX(name, RSYNC_PREFIX)) {
+		if (name_len > RPRE_LEN && name[RPRE_LEN] == '%' && HAS_PREFIX(name, RSYNC_PREFIX)) {
 			if ((am_sender && preserve_xattrs < 2)
 			 || (am_root < 0
 			  && (strcmp(name+RPRE_LEN+1, XSTAT_SUFFIX) == 0
@@ -352,11 +354,13 @@ int copy_xattrs(const char *source, const char *dest)
 		name_len = strlen(name) + 1;
 		list_len -= name_len;
 
+		if (saw_xattr_filter) {
+			if (name_is_excluded(name, NAME_IS_XATTR, ALL_FILTERS))
+				continue;
+		}
 #ifdef HAVE_LINUX_XATTRS
-		/* We always ignore the system namespace, and non-root
-		 * ignores everything but the user namespace. */
-		if (user_only ? !HAS_PREFIX(name, USER_PREFIX)
-			      : HAS_PREFIX(name, SYSTEM_PREFIX))
+		/* Choose between ignoring the system namespace or (non-root) ignoring any non-user namespace. */
+		else if (user_only ? !HAS_PREFIX(name, USER_PREFIX) : HAS_PREFIX(name, SYSTEM_PREFIX))
 			continue;
 #endif
 
@@ -366,7 +370,7 @@ int copy_xattrs(const char *source, const char *dest)
 		if (sys_lsetxattr(dest, name, ptr, datum_len) < 0) {
 			int save_errno = errno ? errno : EINVAL;
 			rsyserr(FERROR_XFER, errno,
-				"copy_xattrs: lsetxattr(\"%s\",\"%s\") failed",
+				"copy_xattrs: lsetxattr(%s,\"%s\") failed",
 				full_fname(dest), name);
 			errno = save_errno;
 			return -1;
@@ -813,23 +817,34 @@ void receive_xattr(int f, struct file_struct *file)
 		size_t dget_len = datum_len > MAX_FULL_DATUM ? 1 + MAX_DIGEST_LEN : datum_len;
 		size_t extra_len = MIGHT_NEED_RPRE ? RPRE_LEN : 0;
 		if ((dget_len + extra_len < dget_len)
-		 || (dget_len + extra_len + name_len < dget_len))
+		 || (dget_len + extra_len + name_len < dget_len + extra_len))
 			overflow_exit("receive_xattr");
 		ptr = new_array(char, dget_len + extra_len + name_len);
 		if (!ptr)
 			out_of_memory("receive_xattr");
 		name = ptr + dget_len + extra_len;
 		read_buf(f, name, name_len);
+		if (name_len < 1 || name[name_len-1] != '\0') {
+			rprintf(FERROR, "Invalid xattr name received (missing trailing \\0).\n");
+			exit_cleanup(RERR_FILEIO);
+		}
 		if (dget_len == datum_len)
 			read_buf(f, ptr, dget_len);
 		else {
 			*ptr = XSTATE_ABBREV;
 			read_buf(f, ptr + 1, MAX_DIGEST_LEN);
 		}
+
+		if (saw_xattr_filter) {
+			if (name_is_excluded(name, NAME_IS_XATTR, ALL_FILTERS)) {
+				free(ptr);
+				continue;
+			}
+		}
 #ifdef HAVE_LINUX_XATTRS
 		/* Non-root can only save the user namespace. */
 		if (am_root <= 0 && !HAS_PREFIX(name, USER_PREFIX)) {
-			if (!am_root) {
+			if (!am_root && !saw_xattr_filter) {
 				free(ptr);
 				continue;
 			}
@@ -860,6 +875,7 @@ void receive_xattr(int f, struct file_struct *file)
 			free(ptr);
 			continue;
 		}
+
 		rxa = EXPAND_ITEM_LIST(&temp_xattr, rsync_xa, 1);
 		rxa->name = name;
 		rxa->datum = ptr;
@@ -963,6 +979,7 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 		name = rxas[i].name;
 
 		if (XATTR_ABBREV(rxas[i])) {
+			int sum_len;
 			/* See if the fnamecmp version is identical. */
 			len = name_len = rxas[i].name_len;
 			if ((ptr = get_xattr_data(fnamecmp, name, &len, 1)) == NULL) {
@@ -981,8 +998,8 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 
 			sum_init(-1, checksum_seed);
 			sum_update(ptr, len);
-			sum_end(sum);
-			if (memcmp(sum, rxas[i].datum + 1, MAX_DIGEST_LEN) != 0) {
+			sum_len = sum_end(sum);
+			if (memcmp(sum, rxas[i].datum + 1, sum_len) != 0) {
 				free(ptr);
 				goto still_abbrev;
 			}
@@ -991,7 +1008,7 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 				; /* Value is already set when identical */
 			else if (sys_lsetxattr(fname, name, ptr, len) < 0) {
 				rsyserr(FERROR_XFER, errno,
-					"rsync_xal_set: lsetxattr(\"%s\",\"%s\") failed",
+					"rsync_xal_set: lsetxattr(%s,\"%s\") failed",
 					full_fname(fname), name);
 				ret = -1;
 			} else /* make sure caller sets mtime */
@@ -1012,7 +1029,7 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 
 		if (sys_lsetxattr(fname, name, rxas[i].datum, rxas[i].datum_len) < 0) {
 			rsyserr(FERROR_XFER, errno,
-				"rsync_xal_set: lsetxattr(\"%s\",\"%s\") failed",
+				"rsync_xal_set: lsetxattr(%s,\"%s\") failed",
 				full_fname(fname), name);
 			ret = -1;
 		} else /* make sure caller sets mtime */
@@ -1024,15 +1041,16 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 		name_len = strlen(name) + 1;
 		list_len -= name_len;
 
+		if (saw_xattr_filter) {
+			if (name_is_excluded(name, NAME_IS_XATTR, ALL_FILTERS))
+				continue;
+		}
 #ifdef HAVE_LINUX_XATTRS
-		/* We always ignore the system namespace, and non-root
-		 * ignores everything but the user namespace. */
-		if (user_only ? !HAS_PREFIX(name, USER_PREFIX)
-			      : HAS_PREFIX(name, SYSTEM_PREFIX))
+		/* Choose between ignoring the system namespace or (non-root) ignoring any non-user namespace. */
+		else if (user_only ? !HAS_PREFIX(name, USER_PREFIX) : HAS_PREFIX(name, SYSTEM_PREFIX))
 			continue;
 #endif
-		if (am_root < 0 && name_len > RPRE_LEN
-		 && name[RPRE_LEN] == '%' && strcmp(name, XSTAT_ATTR) == 0)
+		if (am_root < 0 && name_len > RPRE_LEN && name[RPRE_LEN] == '%' && strcmp(name, XSTAT_ATTR) == 0)
 			continue;
 
 		for (i = 0; i < xalp->count; i++) {
@@ -1042,7 +1060,7 @@ static int rsync_xal_set(const char *fname, item_list *xalp,
 		if (i == xalp->count) {
 			if (sys_lremovexattr(fname, name) < 0) {
 				rsyserr(FERROR_XFER, errno,
-					"rsync_xal_set: lremovexattr(\"%s\",\"%s\") failed",
+					"rsync_xal_set: lremovexattr(%s,\"%s\") failed",
 					full_fname(fname), name);
 				ret = -1;
 			} else /* make sure caller sets mtime */
@@ -1107,7 +1125,7 @@ int set_xattr_acl(const char *fname, int is_access_acl, const char *buf, size_t 
 	const char *name = is_access_acl ? XACC_ACL_ATTR : XDEF_ACL_ATTR;
 	if (sys_lsetxattr(fname, name, buf, buf_len) < 0) {
 		rsyserr(FERROR_XFER, errno,
-			"set_xattr_acl: lsetxattr(\"%s\",\"%s\") failed",
+			"set_xattr_acl: lsetxattr(%s,\"%s\") failed",
 			full_fname(fname), name);
 		return -1;
 	}

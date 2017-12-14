@@ -372,7 +372,7 @@ enum delret {
 #include <utime.h>
 #endif
 
-#if defined HAVE_UTIMENSAT || defined HAVE_LUTIMES
+#if defined HAVE_UTIMENSAT || defined HAVE_LUTIMES || defined HAVE_SETATTRLIST
 #define CAN_SET_SYMLINK_TIMES 1
 #endif
 
@@ -384,11 +384,17 @@ enum delret {
 #define CAN_CHMOD_SYMLINK 1
 #endif
 
-#ifdef HAVE_UTIMENSAT
+#if defined HAVE_UTIMENSAT || defined HAVE_SETATTRLIST
+#define CAN_SET_NSEC 1
+#endif
+
+#ifdef CAN_SET_NSEC
 #ifdef HAVE_STRUCT_STAT_ST_MTIM_TV_NSEC
 #define ST_MTIME_NSEC st_mtim.tv_nsec
 #elif defined(HAVE_STRUCT_STAT_ST_MTIMENSEC)
 #define ST_MTIME_NSEC st_mtimensec
+#elif defined(HAVE_STRUCT_STAT_ST_MTIMESPEC_TV_NSEC)
+#define ST_MTIME_NSEC st_mtimespec.tv_nsec
 #endif
 #endif
 
@@ -856,6 +862,10 @@ struct map_struct {
 	int status;		/* first errno from read errors		*/
 };
 
+#define NAME_IS_FILE		(0)    /* filter name as a file */
+#define NAME_IS_DIR		(1<<0) /* filter name as a dir */
+#define NAME_IS_XATTR		(1<<2) /* filter name as an xattr */
+
 #define FILTRULE_WILD		(1<<0) /* pattern has '*', '[', and/or '?' */
 #define FILTRULE_WILD2		(1<<1) /* pattern has '**' */
 #define FILTRULE_WILD2_PREFIX	(1<<2) /* pattern starts with "**" */
@@ -876,6 +886,7 @@ struct map_struct {
 #define FILTRULE_RECEIVER_SIDE	(1<<17)/* rule applies to the receiving side */
 #define FILTRULE_CLEAR_LIST	(1<<18)/* this item is the "!" token */
 #define FILTRULE_PERISHABLE	(1<<19)/* perishable if parent dir goes away */
+#define FILTRULE_XATTR		(1<<20)/* rule only applies to xattr names */
 
 #define FILTRULES_SIDES (FILTRULE_SENDER_SIDE | FILTRULE_RECEIVER_SIDE)
 
