@@ -1,3 +1,10 @@
+rsync-huai (3.1.2+huai+git20171204) unstable; urgency=medium
+
+  * Merge upstream changes.
+    (CVE-2017-16548, CVE-2017-17433, CVE-2017-17434)
+
+ -- Boyuan Yang <073plan@gmail.com>  Thu, 14 Dec 2017 20:52:09 +0800
+
 rsync-huai (3.1.2+huai+git20161101~deb8u1) jessie; urgency=medium
 
   * Rebase against TUNA upstream.
