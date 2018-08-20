@@ -10,11 +10,11 @@ It can store the attributes, modes and so on of the entire file tree in memory, 
 
 # Detailed Introduction
 
-As we all know, rsync is a good tool for mirroring things. Various features of it are relied by mirror administrators. Most importantly, it is needed to find out what get changed and only transfer them. Besides, we need `rsync` to keep the `modtime`, `mode`, `owner` the same. Also, some may add a `exclude-from` list to mirror files only needed or `delete-after` to delete files deleted by the upstream after fetching new ones. 
+As we all know, rsync is a good tool for mirroring things. Various features of it are relied by mirror administrators. Most importantly, it is needed to find out what get changed and only transfer them. Besides, we need `rsync` to keep the `modtime`, `mode`, `owner` the same. Also, some may add an `exclude-from` list to mirror files only needed or `delete-after` to delete files deleted by the upstream after fetching new ones.
 
-However, providing rsync service for other mirror sites can be a desaster. When a client begins to `rsync` file from a server, the first thing the server do is recursively generating a list of the file tree including all the names and other information of the files and directories. Obviously, the process involves repeatedly seeking the disks, which leads to bad performance of disk io. 
+However, providing rsync service for other mirror sites can be a disaster. When a client begins to `rsync` file from a server, the first thing the server does is recursively generating a list of the file tree including all the names and other information of the files and directories. Obviously, the process involves repeatedly seeking the disks, which leads to bad performance of disk io.
 
-Take the centos repo for example. The command `rsync --dry-run` is used to make the rsync server generate the list and exit, without doing any real data transfer. Cgroup is also used to count the bytes read and IO operations. And a wrapper script is written to put the server process inside the cgroup. 
+Take the centos repo for example. The command `rsync --dry-run` is used to make the rsync server generate the list and exit, without doing any real data transfer. Cgroup is also used to count the bytes read and IO operations. And a wrapper script is written to put the server process inside the cgroup.
 
 ```
 % cd /sys/fs/cgroup/blkio
@@ -23,10 +23,10 @@ Take the centos repo for example. The command `rsync --dry-run` is used to make 
 #!/bin/bash
 shift
 exec cgexec -g blkio:rsyncd "$@"
-% echo 3 > /proc/sys/vm/drop_caches 
+% echo 3 > /proc/sys/vm/drop_caches
 % echo 1 > blkio.reset_stats
 % rsync -an :/path/to/local/centos_repo/ /path/to/new/repo/ --rsh="/tmp/wrap.sh"
-% grep . blkio.throttle.io* 
+% grep . blkio.throttle.io*
 
 # Here are the counter values
 ```
@@ -44,11 +44,11 @@ It's no doubt that, traversing the directory tree generates large amount of frag
 
 I once came up with an idea that maintaining the meta data inside a git repo. After a successful update, the server calculates and stores the meta into and generates a commit. The client, simply doing `git pull` and `git diff`, can easily know the difference and can only request the files changed with a `--files-from` option. However, this approach needs modification on the client side, which cannot be easily adapted.
 
-Considering the compatibility of standard rsync clients, generating the list is not avoidable. Noticing it is only file attributes that are needed to do that, such information can be stored in a faster storage and hard disks are visited only when the real content of some file is requested. 
+Considering the compatibility of standard rsync clients, generating the list is not avoidable. Noticing it is only file attributes that are needed to do that, such information can be stored in a faster storage and hard disks are visited only when the real content of some file is requested.
 
 First, a new option `--only-send-attrs` is added to the rsync command. When enabled, it will work as if the content of each regular file from the source is replaced by its size. As a result, we can get a directory tree with the same `modtime`, `mode`, `owner` information with the source, except the size. The size information, however, is stored in the content. This tree can be stored on things like `tmpfs`. We call this "attr tree" for short.
 
-Secondly, a new config item `real file prefix` is add to `rsyncd.conf`. A rsync daemon provides service with the "attr tree", and thus can correctly generate the list. When requested for a certain file, the rsync daemon prepend the `real file prefix` before the path, and can find the correct path to the content of the file.
+Secondly, a new config item `real file prefix` is add to `rsyncd.conf`. A rsync daemon provides service with the "attr tree", and thus can correctly generate the list. When requested for a certain file, the rsync daemon prepends the `real file prefix` before the path, and can find the correct path to the content of the file.
 
 The code of rsync is so ill-organized that I did some ugly modifications to the code. Here is a brief how-to:
 
@@ -62,7 +62,7 @@ Suppose originally the repos on the server are stored like this:
  +-barz/
 ```
 
-You need create a new directory, and move them inside.
+You need to create a new directory, and move them inside.
 
 ```
 /storage
@@ -82,7 +82,7 @@ mkdir mirror-attrs
 mount -t tmpfs none mirror-attrs
 for i in foo bar; do
   /path/to/my/rsync -avPH --delete-after --only-send-attrs mirrors/$i/ mirror-attrs/$i/
-done 
+done
 ```
 
 The result is:
@@ -101,7 +101,7 @@ The result is:
     +- bar/
 ```
 
-And this is the corresponding rsyncd.conf
+And this is the corresponding `rsyncd.conf`
 
 ```
 ignore nonreadable = yes
@@ -154,7 +154,7 @@ exec cgexec -g blkio:rsync "$@"
 % rsync -avP --delete :./centos/ ./centos-old1/ --rsh="/tmp/wrap.sh"
 sent 7,029,376 bytes  received 4,784,663,386 bytes  12,829,164.02 bytes/sec
 total size is 153,833,232,729  speedup is 32.10
-``` 
+```
 
 ### `rsync-huai`
 
@@ -204,7 +204,7 @@ Rsync version | IO ops | Read Bytes | Bytes/IO op
 `rsync`       | 88846  | 6345285632 | 71418.92
 `rsync-huai`  | 83510  | 6323490816 | 75721.36
  Difference   | -6.01% | -0.34%     | 6.02%
- 
+
 ### Test #2
 
 After this test, I've carried another one. The result is as below.
