@@ -199,8 +199,8 @@ This indicated that there was no difference between them.
 
 ### Result
 
-              |IO ops  | Read Bytes | Bytes/IO op
- -------------|--------|------------|------------
+Rsync version | IO ops | Read Bytes | Bytes/IO op
+-------------|--------|------------|------------
 `rsync`       | 88846  | 6345285632 | 71418.92
 `rsync-huai`  | 83510  | 6323490816 | 75721.36
  Difference   | -6.01% | -0.34%     | 6.02%
@@ -216,8 +216,8 @@ Fri Oct 14 11:36:01 UTC 2016
 Sun Oct 16 11:48:01 UTC 2016
 ```
 
-              |IO ops  | Read Bytes | Bytes/IO op
- -------------|--------|------------|------------
+Rsync version | IO ops | Read Bytes | Bytes/IO op
+-------------|--------|------------|------------
 `rsync`       |  10658 |   45445120 |  4263.94
 `rsync-huai`  |     51 |    1998848 | 39193.10
  Difference   |-99.52% |    -95.60% |  819.17%
