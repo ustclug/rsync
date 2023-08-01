@@ -15,9 +15,6 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 # Don't use bundled zlib (with-included-zlib=no).
 override_dh_auto_configure:
 	dh_auto_configure -- --with-included-zlib=no --disable-md5-asm --with-rrsync
-	sed -i 's/rsync$$(EXEEXT)/rsync-huai/g' Makefile
-	sed -i 's/rsync.1/rsync-huai.1/g' Makefile
-	sed -i 's/rsyncd.conf.5/rsyncd-huai.conf.5/g' Makefile
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable

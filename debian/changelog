@@ -2,7 +2,7 @@ rsync-huai (3.2.7-1+huai+git20230802) unstable; urgency=medium
 
   * Merge with Debian upstream.
 
- -- Keyu Tao <taoky@ustclug.org>  Web, 02 Aug 2023 12:00:00 +0000
+ -- Keyu Tao <taoky@ustclug.org>  Wed, 02 Aug 2023 12:00:00 +0000
 
 rsync-huai (3.1.2+huai+git20171205~deb9u1) stretch; urgency=medium
 
