@@ -1,7 +1,7 @@
 #! /bin/sh
 
 # Copyright (C) 2001, 2002 by Martin Pool <mbp@samba.org>
-# Copyright (C) 2003, 2004, 2005, 2006 Wayne Davison
+# Copyright (C) 2003-2022 Wayne Davison
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version
@@ -11,16 +11,22 @@
 # WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 # Lesser General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU Lesser General Public
 # License along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+# -------------------------------------------------------------------------
 
 # rsync top-level test script -- this invokes all the other more
 # detailed tests in order.  This script can either be called by `make
 # check' or `make installcheck'.  `check' runs against the copies of
 # the program and other files in the build directory, and
-# `installcheck' against the installed copy of the program.  
+# `installcheck' against the installed copy of the program.
+
+# It can also be called on a single test file using a run like this:
+#
+#  preserve_scratch=yes whichtests=itemize.test ./runtests.sh
 
 # In either case we need to also be able to find the source directory,
 # since we read test scripts and possibly other information from
@@ -47,7 +53,7 @@
 # build scripts.  At the moment we assume we are invoked from the
 # source directory.
 
-# This script must be invoked from the build directory.  
+# This script must be invoked from the build directory.
 
 # A scratch directory, 'testtmp', is used in the build directory to
 # hold per-test subdirectories.
@@ -57,10 +63,11 @@
 # Make command line.  It's also set by the build farm to give more
 # detail for failing builds.
 
+# -------------------------------------------------------------------------
 
 # NOTES FOR TEST CASES:
 
-# Each test case runs in its own shell. 
+# Each test case runs in its own shell.
 
 # Exit codes from tests:
 
@@ -75,6 +82,7 @@
 
 # rsync.fns contains some general setup functions and definitions.
 
+# -------------------------------------------------------------------------
 
 # NOTES ON PORTABILITY:
 
@@ -103,6 +111,7 @@
 # Don't rely on grep -q, as that doesn't work everywhere -- just redirect
 # stdout to /dev/null to keep it quiet.
 
+# -------------------------------------------------------------------------
 
 # STILL TO DO:
 
@@ -141,12 +150,12 @@ if [ "x$loglevel" != x ] && [ "$loglevel" -gt 8 ]; then
     fi
 fi
 
-POSIXLY_CORRECT=1 
+POSIXLY_CORRECT=1
 if test x"$TOOLDIR" = x; then
     TOOLDIR=`pwd`
 fi
 srcdir=`dirname $0`
-if test x"$srcdir" = x -o x"$srcdir" = x.; then
+if test x"$srcdir" = x || test x"$srcdir" = x.; then
     srcdir="$TOOLDIR"
 fi
 if test x"$rsync_bin" = x; then
@@ -158,10 +167,10 @@ RSYNC="$rsync_bin $*"
 #RSYNC="valgrind $rsync_bin $*"
 
 TLS_ARGS=''
-if egrep '^#define HAVE_LUTIMES 1' config.h >/dev/null; then
+if grep -E '^#define HAVE_LUTIMES 1' config.h >/dev/null; then
     TLS_ARGS="$TLS_ARGS -l"
 fi
-if egrep '#undef CHOWN_MODIFIES_SYMLINK' config.h >/dev/null; then
+if grep -E '#undef CHOWN_MODIFIES_SYMLINK' config.h >/dev/null; then
     TLS_ARGS="$TLS_ARGS -L"
 fi
 
@@ -191,7 +200,7 @@ if [ "x$preserve_scratch" = xyes ]; then
     echo "    preserve_scratch=yes"
 else
     echo "    preserve_scratch=no"
-fi    
+fi
 
 # Check if setacl/setfacl is around and if it supports the -k or -s option.
 if setacl -k u::7,g::5,o:5 testsuite 2>/dev/null; then
@@ -217,6 +226,8 @@ if [ ! -d "$srcdir" ]; then
     exit 2
 fi
 
+expect_skipped="${RSYNC_EXPECT_SKIPPED-IGNORE}"
+skipped_list=''
 skipped=0
 missing=0
 passed=0
@@ -227,7 +238,7 @@ failed=0
 # failure to aid investigation.  We don't remove the testtmp subdir at
 # the end so that it can be configured as a symlink to a filesystem that
 # has ACLs and xattr support enabled (if desired).
-scratchbase="$TOOLDIR"/testtmp
+scratchbase="${scratchbase:-$TOOLDIR}"/testtmp
 echo "    scratchbase=$scratchbase"
 [ -d "$scratchbase" ] || mkdir "$scratchbase"
 
@@ -240,7 +251,7 @@ prep_scratch() {
     [ -d "$scratchdir" ] && chmod -R u+rwX "$scratchdir" && rm -rf "$scratchdir"
     mkdir "$scratchdir"
     # Get rid of default ACLs and dir-setgid to avoid confusing some tests.
-    $setfacl_nodef "$scratchdir" || true
+    $setfacl_nodef "$scratchdir" 2>/dev/null || true
     chmod g-s "$scratchdir"
     case "$srcdir" in
     /*) ln -s "$srcdir" "$scratchdir/src" ;;
@@ -256,10 +267,12 @@ maybe_discard_scratch() {
 
 if [ "x$whichtests" = x ]; then
     whichtests="*.test"
+    full_run=yes
+else
+    full_run=no
 fi
 
-for testscript in $suitedir/$whichtests
-do
+for testscript in $suitedir/$whichtests; do
     testbase=`echo $testscript | sed -e 's!.*/!!' -e 's/.test\$//'`
     scratchdir="$scratchbase/$testbase"
 
@@ -275,7 +288,7 @@ do
     result=$?
     set -e
 
-    if [ "x$always_log" = xyes -o \( $result != 0 -a $result != 77 -a $result != 78 \) ]
+    if [ "x$always_log" = xyes ] || ( [ $result != 0 ] && [ $result != 77 ] && [ $result != 78 ] )
     then
 	echo "----- $testbase log follows"
 	cat "$scratchdir/test.log"
@@ -297,11 +310,12 @@ do
 	# backticks will fill the whole file onto one line, which is a feature
 	whyskipped=`cat "$scratchdir/whyskipped"`
 	echo "SKIP    $testbase ($whyskipped)"
+	skipped_list="$skipped_list,$testbase"
 	skipped=`expr $skipped + 1`
 	maybe_discard_scratch
 	;;
     78)
-        # It failed, but we expected that.  don't dump out error logs, 
+        # It failed, but we expected that.  don't dump out error logs,
 	# because most users won't want to see them.  But do leave
 	# the working directory around.
 	echo "XFAIL   $testbase"
@@ -322,6 +336,15 @@ echo "      $passed passed"
 [ "$failed" -gt 0 ]  && echo "      $failed failed"
 [ "$skipped" -gt 0 ] && echo "      $skipped skipped"
 [ "$missing" -gt 0 ] && echo "      $missing missing"
+if [ "$full_run" = yes ] && [ "$expect_skipped" != IGNORE ]; then
+    skipped_list=`echo "$skipped_list" | sed 's/^,//'`
+    echo "----- skipped results:"
+    echo "      expected: $expect_skipped"
+    echo "      got:      $skipped_list"
+else
+    skipped_list=''
+    expect_skipped=''
+fi
 echo '------------------------------------------------------------'
 
 # OK, so expr exits with 0 if the result is neither null nor zero; and
@@ -330,5 +353,8 @@ echo '------------------------------------------------------------'
 # because -e is set.
 
 result=`expr $failed + $missing || true`
+if [ "$result" = 0 ] && [ "$skipped_list" != "$expect_skipped" ]; then
+    result=1
+fi
 echo "overall result is $result"
 exit $result

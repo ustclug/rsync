@@ -2,6 +2,7 @@
  * RFC 1321 compliant MD5 implementation
  *
  * Copyright (C) 2001-2003 Christophe Devine
+ * Copyright (C) 2007-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -146,6 +147,13 @@ static void md5_process(md_context *ctx, const uchar data[CSUM_CHUNK])
 	ctx->D += D;
 }
 
+#ifdef USE_MD5_ASM
+#if CSUM_CHUNK != 64
+#error The MD5 ASM code does not support CSUM_CHUNK != 64
+#endif
+extern void md5_process_asm(md_context *ctx, const void *data, size_t num);
+#endif
+
 void md5_update(md_context *ctx, const uchar *input, uint32 length)
 {
 	uint32 left, fill;
@@ -170,11 +178,20 @@ void md5_update(md_context *ctx, const uchar *input, uint32 length)
 		left = 0;
 	}
 
+#ifdef USE_MD5_ASM /* { */
+	if (length >= CSUM_CHUNK) {
+		uint32 chunks = length / CSUM_CHUNK;
+		md5_process_asm(ctx, input, chunks);
+		length -= chunks * CSUM_CHUNK;
+		input += chunks * CSUM_CHUNK;
+	}
+#else /* } { */
 	while (length >= CSUM_CHUNK) {
 		md5_process(ctx, input);
 		length -= CSUM_CHUNK;
 		input  += CSUM_CHUNK;
 	}
+#endif /* } */
 
 	if (length)
 		memcpy(ctx->buffer + left, input, length);
@@ -207,6 +224,8 @@ void md5_result(md_context *ctx, uchar digest[MD5_DIGEST_LEN])
 	SIVALu(digest, 12, ctx->D);
 }
 
+#ifdef TEST_MD5 /* { */
+
 void get_md5(uchar *out, const uchar *input, int n)
 {
 	md_context ctx;
@@ -214,8 +233,6 @@ void get_md5(uchar *out, const uchar *input, int n)
 	md5_update(&ctx, input, n);
 	md5_result(&ctx, out);
 }
-
-#ifdef TEST_MD5
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -301,4 +318,4 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-#endif
+#endif /* } */

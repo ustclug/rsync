@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1996 Andrew Tridgell
  * Copyright (C) 1996 Paul Mackerras
- * Copyright (C) 2003-2015 Wayne Davison
+ * Copyright (C) 2003-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ extern int do_xfers;
 extern int am_server;
 extern int am_daemon;
 extern int am_sender;
+extern int local_server;
 extern int inc_recurse;
 extern int log_before_transfer;
 extern int stdout_format_has_i;
@@ -33,21 +34,27 @@ extern int logfile_format_has_i;
 extern int want_xattr_optim;
 extern int csum_length;
 extern int append_mode;
+extern int copy_links;
 extern int io_error;
 extern int flist_eof;
+extern int whole_file;
 extern int allowed_lull;
+extern int copy_devices;
 extern int preserve_xattrs;
 extern int protocol_version;
 extern int remove_source_files;
 extern int updating_basis_file;
 extern int make_backups;
 extern int inplace;
+extern int inplace_partial;
 extern int batch_fd;
 extern int write_batch;
 extern int file_old_total;
+extern BOOL want_progress_now;
 extern struct stats stats;
 extern struct file_list *cur_flist, *first_flist, *dir_flist;
 extern int only_send_attrs;
+extern char num_dev_ino_buf[4 + 8 + 8];
 
 extern int module_id;
 
@@ -66,13 +73,10 @@ BOOL extra_flist_sending_enabled;
  **/
 static struct sum_struct *receive_sums(int f)
 {
-	struct sum_struct *s;
-	int32 i;
+	struct sum_struct *s = new(struct sum_struct);
 	int lull_mod = protocol_version >= 31 ? 0 : allowed_lull * 5;
 	OFF_T offset = 0;
-
-	if (!(s = new(struct sum_struct)))
-		out_of_memory("receive_sums");
+	int32 i;
 
 	read_sum_head(f, s);
 
@@ -93,8 +97,7 @@ static struct sum_struct *receive_sums(int f)
 	if (s->count == 0)
 		return(s);
 
-	if (!(s->sums = new_array(struct sum_buf, s->count)))
-		out_of_memory("receive_sums");
+	s->sums = new_array(struct sum_buf, s->count);
 
 	for (i = 0; i < s->count; i++) {
 		s->sums[i].sum1 = read_int(f);
@@ -142,17 +145,23 @@ void successful_send(int ndx)
 		return;
 	f_name(file, fname);
 
-	if (do_lstat(fname, &st) < 0) {
+	if ((copy_links ? do_stat(fname, &st) : do_lstat(fname, &st)) < 0) {
 		failed_op = "re-lstat";
 		goto failed;
 	}
 
-	if (S_ISREG(file->mode) /* Symlinks & devices don't need this check: */
-	 && (st.st_size != F_LENGTH(file) || st.st_mtime != file->modtime
+	if (local_server
+	 && (int64)st.st_dev == IVAL64(num_dev_ino_buf, 4)
+	 && (int64)st.st_ino == IVAL64(num_dev_ino_buf, 4 + 8)) {
+		rprintf(FERROR_XFER, "ERROR: Skipping sender remove of destination file: %s\n", fname);
+		return;
+	}
+
+	if (st.st_size != F_LENGTH(file) || st.st_mtime != file->modtime
 #ifdef ST_MTIME_NSEC
 	 || (NSEC_BUMP(file) && (uint32)st.ST_MTIME_NSEC != F_MOD_NSEC(file))
 #endif
-	)) {
+	) {
 		rprintf(FERROR_XFER, "ERROR: Skipping sender remove for changed file: %s\n", fname);
 		return;
 	}
@@ -191,45 +200,44 @@ static void write_ndx_and_attrs(int f_out, int ndx, int iflags,
 
 static const char *get_real_filename(const char *fname)
 {
-
 	extern char *module_dir;
 	extern unsigned int module_dirlen;
 	extern char curr_dir[MAXPATHLEN];
 
 	static char real_fname[MAXPATHLEN+10];
 	const char *real_path_prefix = lp_real_file_prefix(module_id);
-	if(real_path_prefix && *real_path_prefix != '\0'){
+	if (real_path_prefix && *real_path_prefix != '\0') {
 		char now_cwd[MAXPATHLEN];
 		char *now_relative_cwd;
 		strlcpy(now_cwd, curr_dir, MAXPATHLEN);
 		size_t cwd_length = strlen(now_cwd);
-		if(cwd_length < module_dirlen){
+		if (cwd_length < module_dirlen) {
 			return NULL;
 		}
-		if(strncmp(now_cwd, module_dir, module_dirlen) != 0){
+		if (strncmp(now_cwd, module_dir, module_dirlen) != 0) {
 			return NULL;
 		}
-		if(module_dirlen > 0 && module_dir[module_dirlen - 1] == '/'){
+		if (module_dirlen > 0 && module_dir[module_dirlen - 1] == '/') {
 			now_relative_cwd = now_cwd + module_dirlen;
-		}else if(now_cwd[module_dirlen] == '/'){
+		} else if (now_cwd[module_dirlen] == '/') {
 			now_relative_cwd = now_cwd + module_dirlen + 1;
-		}else if(now_cwd[module_dirlen] == '\0'){
+		} else if (now_cwd[module_dirlen] == '\0') {
 			now_relative_cwd = now_cwd + module_dirlen;
-		}else{
+		} else {
 			return NULL;
 		}
 		int ret;
 		ret = pathjoin(real_fname, MAXPATHLEN, real_path_prefix, now_relative_cwd);
-		if(ret >= MAXPATHLEN){
+		if (ret >= MAXPATHLEN) {
 			return NULL;
 		}
 		strlcpy(now_cwd, real_fname, MAXPATHLEN);
 		ret = pathjoin(real_fname, MAXPATHLEN, now_cwd, fname);
-		if(ret >= MAXPATHLEN){
+		if (ret >= MAXPATHLEN) {
 			return NULL;
 		}
 		return real_fname;
-	}else{
+	} else {
 		return fname;
 	}
 }
@@ -255,6 +263,11 @@ void send_files(int f_in, int f_out)
 	if (DEBUG_GTE(SEND, 1))
 		rprintf(FINFO, "send_files starting\n");
 
+	if (whole_file < 0)
+		whole_file = 0;
+
+	progress_init();
+
 	while (1) {
 		if (inc_recurse) {
 			send_extra_file_list(f_out, MIN_FILECNT_LOOKAHEAD);
@@ -267,9 +280,10 @@ void send_files(int f_in, int f_out)
 		extra_flist_sending_enabled = False;
 
 		if (ndx == NDX_DONE) {
-			if (!am_server && INFO_GTE(PROGRESS, 2) && cur_flist) {
+			if (!am_server && cur_flist) {
 				set_current_file_index(NULL, 0);
-				end_progress(0);
+				if (INFO_GTE(PROGRESS, 2))
+					end_progress(0);
 			}
 			if (inc_recurse && first_flist) {
 				file_old_total -= first_flist->used;
@@ -317,8 +331,7 @@ void send_files(int f_in, int f_out)
 
 		if (!(iflags & ITEM_TRANSFER)) {
 			maybe_log_item(file, iflags, itemizing, xname);
-			write_ndx_and_attrs(f_out, ndx, iflags, fname, file,
-					    fnamecmp_type, xname, xlen);
+			write_ndx_and_attrs(f_out, ndx, iflags, fname, file, fnamecmp_type, xname, xlen);
 			if (iflags & ITEM_IS_NEW) {
 				stats.created_files++;
 				if (S_ISREG(file->mode)) {
@@ -361,10 +374,10 @@ void send_files(int f_in, int f_out)
 				stats.created_files++;
 		}
 
-		updating_basis_file = inplace && (protocol_version >= 29
-			? fnamecmp_type == FNAMECMP_FNAME : make_backups <= 0);
+		updating_basis_file = (inplace_partial && fnamecmp_type == FNAMECMP_PARTIAL_DIR)
+		    || (inplace && (protocol_version >= 29 ? fnamecmp_type == FNAMECMP_FNAME : make_backups <= 0));
 
-		if (!am_server && INFO_GTE(PROGRESS, 1))
+		if (!am_server)
 			set_current_file_index(file, ndx);
 		stats.xferred_files++;
 		stats.total_transferred_size += F_LENGTH(file);
@@ -373,8 +386,7 @@ void send_files(int f_in, int f_out)
 
 		if (!do_xfers) { /* log the transfer */
 			log_item(FCLIENT, file, iflags, NULL);
-			write_ndx_and_attrs(f_out, ndx, iflags, fname, file,
-					    fnamecmp_type, xname, xlen);
+			write_ndx_and_attrs(f_out, ndx, iflags, fname, file, fnamecmp_type, xname, xlen);
 			continue;
 		}
 
@@ -383,22 +395,20 @@ void send_files(int f_in, int f_out)
 			rprintf(FERROR_XFER, "receive_sums failed\n");
 			exit_cleanup(RERR_PROTOCOL);
 		}
-		if(am_daemon && am_sender){
+		if (am_daemon && am_sender) {
 			const char *real_file_name = get_real_filename(fname);
 			if (real_file_name == NULL) {
 				fd = -1;
 				errno = EINVAL;
-			}else{
+			} else {
 				fd = do_open(real_file_name, O_RDONLY, 0);
 			}
-		}else{
+		} else {
 			fd = do_open(fname, O_RDONLY, 0);
 		}
 		if (fd == -1) {
 			if (errno == ENOENT) {
-				enum logcode c = am_daemon
-				    && protocol_version < 28 ? FERROR
-							     : FWARNING;
+				enum logcode c = am_daemon && protocol_version < 28 ? FERROR : FWARNING;
 				io_error |= IOERR_VANISHED;
 				rprintf(c, "file has vanished: %s\n",
 					full_fname(fname));
@@ -422,7 +432,8 @@ void send_files(int f_in, int f_out)
 			close(fd);
 			exit_cleanup(RERR_FILEIO);
 		}
-		if(only_send_attrs){
+
+		if (only_send_attrs) {
 			close(fd);
 			char temp_file[MAXPATHLEN];
 			const char *dest_dir;
@@ -434,7 +445,7 @@ void send_files(int f_in, int f_out)
 				free_sums(s);
 				exit_cleanup(RERR_FILEIO);
 			}
-			if((fd = mkstemp(temp_file))==-1){
+			if ((fd = mkstemp(temp_file)) == -1) {
 				rsyserr(FERROR_XFER, errno, "mkstemp failed");
 				free_sums(s);
 				exit_cleanup(RERR_FILEIO);
@@ -450,6 +461,26 @@ void send_files(int f_in, int f_out)
 			lseek(fd, 0, SEEK_SET);
 			st.st_size = 8;
 		}
+
+		if (IS_DEVICE(st.st_mode)) {
+			if (!copy_devices) {
+				rprintf(FERROR, "attempt to copy device contents without --copy-devices\n");
+				exit_cleanup(RERR_PROTOCOL);
+			}
+			if (st.st_size == 0)
+				st.st_size = get_device_size(fd, fname);
+		}
+
+		if (append_mode > 0 && st.st_size < F_LENGTH(file)) {
+			rprintf(FWARNING, "skipped diminished file: %s\n",
+				full_fname(fname));
+			free_sums(s);
+			close(fd);
+			if (protocol_version >= 30)
+				send_msg_int(MSG_NO_SEND, ndx);
+			continue;
+		}
+
 		if (st.st_size) {
 			int32 read_size = MAX(s->blength * 3, MAX_MAP_SIZE);
 			mbuf = map_file(fd, st.st_size, read_size, s->blength);
@@ -461,8 +492,7 @@ void send_files(int f_in, int f_out)
 				path,slash,fname, big_num(st.st_size));
 		}
 
-		write_ndx_and_attrs(f_out, ndx, iflags, fname, file,
-				    fnamecmp_type, xname, xlen);
+		write_ndx_and_attrs(f_out, ndx, iflags, fname, file, fnamecmp_type, xname, xlen);
 		write_sum_head(f_xfer, s);
 
 		if (DEBUG_GTE(DELTASUM, 2))
@@ -478,6 +508,8 @@ void send_files(int f_in, int f_out)
 		match_sums(f_xfer, s, mbuf, st.st_size);
 		if (INFO_GTE(PROGRESS, 1))
 			end_progress(st.st_size);
+		else if (want_progress_now)
+			instant_progress(fname);
 
 		log_item(log_code, file, iflags, NULL);
 

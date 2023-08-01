@@ -1,0 +1,2 @@
+debian/logrotate.conf.rsync
+debian/rsyncd.conf

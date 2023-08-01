@@ -1,10 +1,4 @@
-rsync-huai for Debian
---------------------
-
-<this file describes information about the source package, see Debian policy
-manual section 4.14. You WILL either need to modify or delete this file>
-
-
-
- -- Shengjing Zhu <i@zhsj.me>  Sat, 12 Nov 2016 18:00:00 +0000
-
+The debian/ subdirectory contains everything that's needed to patch the
+sources and build the binary package. The rules file applies the patches
+in the debian/patches/ subdirectory to a copy of the sources in
+debian/buildtree/ before compiling it there.

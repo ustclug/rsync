@@ -1,0 +1,43 @@
+rsync (3.2.3-5) unstable; urgency=medium
+
+  The --copy-devices option has been reintroduced, it was previously removed in
+  favor of the new one --write-devices, but it turns out they are not equivalent
+  enough and upstream is providing the copy-devices patch on rsync-patches.
+
+  Please beware that although the --copy-devices option is provided by
+  upstream, it is not part of the official rsync package and it could be
+  dropped or changed in ways that are not backwards compatible, though this would
+  only happen between Debian releases.
+
+  That being said, we will not drop this option from the Debian packaging as
+  long as upstream keeps providing the patch under rsync-patches.
+
+ -- Samuel Henrique <samueloph@debian.org>  Sun, 12 Sep 2021 17:25:37 +0100
+
+rsync (3.2.0-1) unstable; urgency=low
+
+  This latest release changed two parameters which used to be present on the
+  Debian packaging of rsync as upstream now integrated the patches.
+
+  Previous parameter:
+  --copy-devices: write to devices as files (implies --inplace)
+  Is now called: --write-devices
+
+  Previous parameter:
+  --noatime: avoid changing the atime on opened files.
+  Is now called: --open-noatime
+
+  Please refer to the manpage rsync(1) for more information.
+
+ -- Samuel Henrique <samueloph@debian.org>  Sat, 20 Jun 2020 18:05:57 +0100
+
+rsync (3.1.3-8) unstable; urgency=medium
+
+  Some useful rsync scripts that used to be installed in
+  /usr/share/doc/rsync/scripts are now installed in
+  /usr/share/rsync/scripts. All of them have execution permission.
+
+  The rrsync script is now deployed into /usr/bin/rrsync as a
+  symlink to /usr/share/rsync/scripts/rrsync.
+
+ -- Samuel Henrique <samueloph@debian.org>  Tue, 15 Oct 2019 01:04:36 +0100

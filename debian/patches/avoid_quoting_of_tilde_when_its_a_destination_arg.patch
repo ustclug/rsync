@@ -1,0 +1,22 @@
+From 537499408948f4e3dd048a861eb58f211e4546f8 Mon Sep 17 00:00:00 2001
+From: Wayne Davison <wayne@opencoder.net>
+Date: Sat, 5 Nov 2022 09:14:33 -0700
+Subject: [PATCH] Avoid quoting of tilde when it's a destination arg.
+
+---
+ options.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/options.c b/options.c
+index d38bbe8db..cfa3e1dcd 100644
+--- a/options.c
++++ b/options.c
+@@ -2510,7 +2510,7 @@ char *safe_arg(const char *opt, const char *arg)
+ 	char *ret;
+ 	if (!protect_args && old_style_args < 2 && (!old_style_args || (!is_filename_arg && opt != SPLIT_ARG_WHEN_OLD))) {
+ 		const char *f;
+-		if (!trust_sender_args && *arg == '~'
++		if (*arg == '~' && is_filename_arg && !am_sender && !trust_sender_args
+ 		 && ((relative_paths && !strstr(arg, "/./"))
+ 		  || !strchr(arg, '/'))) {
+ 			extras++;

@@ -1,0 +1,73 @@
+Description: Removes usage of env on perl shebang as per Debian Policy § 10.4
+Author: Samuel Henrique <samueloph@debian.org>
+Forwarded: not-needed
+Index: rsync/support/cvs2includes
+===================================================================
+--- rsync.orig/support/cvs2includes
++++ rsync/support/cvs2includes
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ #
+ # This script finds all CVS/Entries files in the current directory and below
+ # and creates a local .cvsinclude file with non-inherited rules including each
+Index: rsync/support/file-attr-restore
+===================================================================
+--- rsync.orig/support/file-attr-restore
++++ rsync/support/file-attr-restore
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ # This script will parse the output of "find ARG [ARG...] -ls" and
+ # apply (at your discretion) the permissions, owner, and group info
+ # it reads onto any existing files and dirs (it doesn't try to affect
+Index: rsync/support/files-to-excludes
+===================================================================
+--- rsync.orig/support/files-to-excludes
++++ rsync/support/files-to-excludes
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ # This script takes an input of filenames and outputs a set of
+ # include/exclude directives that can be used by rsync to copy
+ # just the indicated files using an --exclude-from=FILE option.
+Index: rsync/support/logfilter
+===================================================================
+--- rsync.orig/support/logfilter
++++ rsync/support/logfilter
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ # Filter the rsync daemon log messages by module name.  The log file can be
+ # in either syslog format or rsync's own log-file format.  Note that the
+ # MODULE_NAME parameter is used in a regular-expression match in order to
+Index: rsync/support/lsh
+===================================================================
+--- rsync.orig/support/lsh
++++ rsync/support/lsh
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ # This is a "local shell" command that works like a remote shell but only for
+ # the local host.  See the usage message for more details.
+ 
+Index: rsync/support/mnt-excl
+===================================================================
+--- rsync.orig/support/mnt-excl
++++ rsync/support/mnt-excl
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ # This script takes a command-line arg of a source directory
+ # that will be passed to rsync, and generates a set of excludes
+ # that will exclude all mount points from the list.  This is
+Index: rsync/support/rsyncstats
+===================================================================
+--- rsync.orig/support/rsyncstats
++++ rsync/support/rsyncstats
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env perl
++#!/usr/bin/perl
+ #
+ # This script parses the default logfile format produced by rsync when running
+ # as a daemon with transfer logging enabled.  It also parses a slightly tweaked

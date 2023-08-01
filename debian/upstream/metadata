@@ -1,0 +1,6 @@
+Repository: git://git.samba.org/rsync.git
+Bug-Submit:
+    - https://github.com/WayneD/rsync
+Bug-Database:
+    - https://github.com/WayneD/rsync/issues
+    - https://bugzilla.samba.org/buglist.cgi?bug_status=UNCONFIRMED&bug_status=NEW&bug_status=ASSIGNED&bug_status=REOPENED&bug_status=RESOLVED&bug_status=VERIFIED&product=rsync

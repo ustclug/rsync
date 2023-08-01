@@ -2,7 +2,7 @@
  * Routines to authenticate access to a daemon (hosts allow/deny).
  *
  * Copyright (C) 1998 Andrew Tridgell
- * Copyright (C) 2004-2015 Wayne Davison
+ * Copyright (C) 2004-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,10 @@
  */
 
 #include "rsync.h"
+#include "ifuncs.h"
+#ifdef HAVE_NETGROUP_H
+#include <netgroup.h>
+#endif
 
 static int allow_forward_dns;
 
@@ -32,6 +36,11 @@ static int match_hostname(const char **host_ptr, const char *addr, const char *t
 
 	if (!host || !*host)
 		return 0;
+
+#ifdef HAVE_INNETGR
+	if (*tok == '@' && tok[1])
+		return innetgr(tok + 1, host, NULL, NULL);
+#endif
 
 	/* First check if the reverse-DNS-determined hostname matches. */
 	if (iwildmatch(tok, host))
@@ -52,10 +61,8 @@ static int match_hostname(const char **host_ptr, const char *addr, const char *t
 		if (strcmp(addr, inet_ntoa(*(struct in_addr*)(hp->h_addr_list[i]))) == 0) {
 			/* If reverse lookups are off, we'll use the conf-specified
 			 * hostname in preference to UNDETERMINED. */
-			if (host == undetermined_hostname) {
-				if (!(*host_ptr = strdup(tok)))
-					*host_ptr = undetermined_hostname;
-			}
+			if (host == undetermined_hostname)
+				*host_ptr = strdup(tok);
 			return 1;
 		}
 	}
@@ -158,8 +165,7 @@ static int match_address(const char *addr, const char *tok)
 		break;
 
 #ifdef INET6
-	case PF_INET6:
-	    {
+	case PF_INET6: {
 		struct sockaddr_in6 *sin6a, *sin6t;
 
 		sin6a = (struct sockaddr_in6 *)resa->ai_addr;
@@ -171,20 +177,19 @@ static int match_address(const char *addr, const char *tok)
 		addrlen = 16;
 
 #ifdef HAVE_SOCKADDR_IN6_SCOPE_ID
-		if (sin6t->sin6_scope_id &&
-		    sin6a->sin6_scope_id != sin6t->sin6_scope_id) {
+		if (sin6t->sin6_scope_id && sin6a->sin6_scope_id != sin6t->sin6_scope_id) {
 			ret = 0;
 			goto out;
 		}
 #endif
 
 		break;
-	    }
+	}
 #endif
 	default:
-	    rprintf(FLOG, "unknown family %u\n", rest->ai_family);
-	    ret = 0;
-	    goto out;
+		rprintf(FLOG, "unknown family %u\n", rest->ai_family);
+		ret = 0;
+		goto out;
 	}
 
 	bits = -1;
@@ -242,9 +247,6 @@ static int access_match(const char *list, const char *addr, const char **host_pt
 {
 	char *tok;
 	char *list2 = strdup(list);
-
-	if (!list2)
-		out_of_memory("access_match");
 
 	strlower(list2);
 

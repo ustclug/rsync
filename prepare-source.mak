@@ -1,6 +1,9 @@
-conf: configure.sh config.h.in
+SHELL=/bin/sh
 
-aclocal.m4:
+conf: configure.sh config.h.in
+.PHONY: conf
+
+aclocal.m4: m4/*.m4
 	aclocal -I m4
 
 configure.sh: configure.ac aclocal.m4

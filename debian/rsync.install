@@ -1,0 +1,12 @@
+packaging/cull-options /usr/share/rsync/scripts/
+support/atomic-rsync /usr/share/rsync/scripts/
+support/cvs2includes /usr/share/rsync/scripts/
+support/file-attr-restore /usr/share/rsync/scripts/
+support/files-to-excludes /usr/share/rsync/scripts/
+support/git-set-file-times /usr/share/rsync/scripts/
+support/logfilter /usr/share/rsync/scripts/
+support/lsh /usr/share/rsync/scripts/
+support/mnt-excl /usr/share/rsync/scripts/
+support/munge-symlinks /usr/share/rsync/scripts/
+support/rsyncstats /usr/share/rsync/scripts/
+support/rsync-no-vanished /usr/share/rsync/scripts/

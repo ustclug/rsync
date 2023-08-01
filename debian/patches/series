@@ -1,0 +1,6 @@
+disable_reconfigure_req.diff
+skip_devices_test.patch
+perl_shebang.patch
+fix_rrsync_man_generation.patch
+avoid_quoting_of_tilde_when_its_a_destination_arg.patch
+trust_the_sender_on_a_local_transfer.patch

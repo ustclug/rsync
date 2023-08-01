@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1998-2001 Andrew Tridgell <tridge@samba.org>
  * Copyright (C) 2001-2002 Martin Pool <mbp@samba.org>
- * Copyright (C) 2002-2015 Wayne Davison
+ * Copyright (C) 2002-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 
 #include "rsync.h"
 #include "itypes.h"
+#include "ifuncs.h"
 
 extern int quiet;
 extern int dry_run;
@@ -30,13 +31,14 @@ extern int am_sender;
 extern int am_server;
 extern int am_daemon;
 extern int am_root;
+extern int msgs2stderr;
 extern int rsync_port;
 extern int protect_args;
 extern int ignore_errors;
 extern int preserve_xattrs;
 extern int kluge_around_eof;
-extern int daemon_over_rsh;
 extern int munge_symlinks;
+extern int open_noatime;
 extern int sanitize_paths;
 extern int numeric_ids;
 extern int filesfrom_fd;
@@ -45,6 +47,7 @@ extern int protocol_version;
 extern int io_timeout;
 extern int no_detach;
 extern int write_batch;
+extern int old_style_args;
 extern int default_af_hint;
 extern int logfile_format_has_i;
 extern int logfile_format_has_o_or_i;
@@ -53,6 +56,7 @@ extern char *config_file;
 extern char *logfile_format;
 extern char *files_from;
 extern char *tmpdir;
+extern char *early_input_file;
 extern struct chmod_mode_struct *chmod_modes;
 extern filter_rule_list daemon_filter_list;
 #ifdef ICONV_OPTION
@@ -63,9 +67,17 @@ extern uid_t our_uid;
 extern gid_t our_gid;
 
 char *auth_user;
+char *daemon_auth_choices;
 int read_only = 0;
 int module_id = -1;
+int pid_file_fd = -1;
+int early_input_len = 0;
+char *early_input = NULL;
+pid_t namecvt_pid = 0;
 struct chmod_mode_struct *daemon_chmod_modes;
+
+#define EARLY_INPUT_CMD "#early_input="
+#define EARLY_INPUT_CMDLEN (sizeof EARLY_INPUT_CMD - 1)
 
 /* module_dirlen is the length of the module_dir string when in daemon
  * mode and module_dir is not "/"; otherwise 0.  (Note that a chroot-
@@ -76,6 +88,7 @@ unsigned int module_dirlen = 0;
 char *full_module_path;
 
 static int rl_nulls = 0;
+static int namecvt_fd_req = -1, namecvt_fd_ans = -1;
 
 #ifdef HAVE_SIGACTION
 static struct sigaction sigact;
@@ -121,8 +134,7 @@ int start_socket_client(char *host, int remote_argc, char *remote_argv[],
 		*p = '\0';
 	}
 
-	fd = open_socket_out_wrapped(host, rsync_port, bind_address,
-				     default_af_hint);
+	fd = open_socket_out_wrapped(host, rsync_port, bind_address, default_af_hint);
 	if (fd == -1)
 		exit_cleanup(RERR_SOCKETIO);
 
@@ -138,19 +150,13 @@ int start_socket_client(char *host, int remote_argc, char *remote_argv[],
 static int exchange_protocols(int f_in, int f_out, char *buf, size_t bufsiz, int am_client)
 {
 	int remote_sub = -1;
-#if SUBPROTOCOL_VERSION != 0
-	int our_sub = protocol_version < PROTOCOL_VERSION ? 0 : SUBPROTOCOL_VERSION;
-#else
-	int our_sub = 0;
-#endif
-	char *motd;
+	int our_sub = get_subprotocol_version();
 
-	io_printf(f_out, "@RSYNCD: %d.%d\n", protocol_version, our_sub);
-
+	output_daemon_greeting(f_out, am_client);
 	if (!am_client) {
-		motd = lp_motd_file();
+		char *motd = lp_motd_file();
 		if (motd && *motd) {
-			FILE *f = fopen(motd,"r");
+			FILE *f = fopen(motd, "r");
 			while (f && !feof(f)) {
 				int len = fread(buf, 1, bufsiz - 1, f);
 				if (len > 0)
@@ -178,14 +184,28 @@ static int exchange_protocols(int f_in, int f_out, char *buf, size_t bufsiz, int
 	}
 
 	if (remote_sub < 0) {
-		if (remote_protocol == 30) {
+		if (remote_protocol >= 30) {
 			if (am_client)
-				rprintf(FERROR, "rsync: server is speaking an incompatible beta of protocol 30\n");
+				rprintf(FERROR, "rsync: the server omitted the subprotocol value: %s\n", buf);
 			else
-				io_printf(f_out, "@ERROR: your client is speaking an incompatible beta of protocol 30\n");
+				io_printf(f_out, "@ERROR: your client omitted the subprotocol value: %s\n", buf);
 			return -1;
 		}
 		remote_sub = 0;
+	}
+
+	daemon_auth_choices = strchr(buf + 9, ' ');
+	if (daemon_auth_choices) {
+		char *cp;
+		daemon_auth_choices = strdup(daemon_auth_choices + 1);
+		if ((cp = strchr(daemon_auth_choices, '\n')) != NULL)
+			*cp = '\0';
+	} else if (remote_protocol > 31) {
+		if (am_client)
+			rprintf(FERROR, "rsync: the server omitted the digest name list: %s\n", buf);
+		else
+			io_printf(f_out, "@ERROR: your client omitted the digest name list: %s\n", buf);
+		return -1;
 	}
 
 	if (protocol_version > remote_protocol) {
@@ -230,8 +250,7 @@ int start_inband_exchange(int f_in, int f_out, const char *user, int argc, char 
 	else
 		modlen = p - *argv;
 
-	if (!(modname = new_array(char, modlen+1+1))) /* room for '/' & '\0' */
-		out_of_memory("start_inband_exchange");
+	modname = new_array(char, modlen+1+1); /* room for '/' & '\0' */
 	strlcpy(modname, *argv, modlen + 1);
 	modname[modlen] = '/';
 	modname[modlen+1] = '\0';
@@ -244,10 +263,36 @@ int start_inband_exchange(int f_in, int f_out, const char *user, int argc, char 
 	if (exchange_protocols(f_in, f_out, line, sizeof line, 1) < 0)
 		return -1;
 
-	/* set daemon_over_rsh to false since we need to build the
-	 * true set of args passed through the rsh/ssh connection;
-	 * this is a no-op for direct-socket-connection mode */
-	daemon_over_rsh = 0;
+	if (early_input_file) {
+		STRUCT_STAT st;
+		FILE *f = fopen(early_input_file, "rb");
+		if (!f || do_fstat(fileno(f), &st) < 0) {
+			rsyserr(FERROR, errno, "failed to open %s", early_input_file);
+			return -1;
+		}
+		early_input_len = st.st_size;
+		if (early_input_len > (int)sizeof line) {
+			rprintf(FERROR, "%s is > %d bytes.\n", early_input_file, (int)sizeof line);
+			return -1;
+		}
+		if (early_input_len > 0) {
+			io_printf(f_out, EARLY_INPUT_CMD "%d\n", early_input_len);
+			while (early_input_len > 0) {
+				int len;
+				if (feof(f)) {
+					rprintf(FERROR, "Early EOF in %s\n", early_input_file);
+					return -1;
+				}
+				len = fread(line, 1, early_input_len, f);
+				if (len > 0) {
+					write_buf(f_out, line, len);
+					early_input_len -= len;
+				}
+			}
+		}
+		fclose(f);
+	}
+
 	server_options(sargs, &sargc);
 
 	if (sargc >= MAX_ARGS - 2)
@@ -255,20 +300,45 @@ int start_inband_exchange(int f_in, int f_out, const char *user, int argc, char 
 
 	sargs[sargc++] = ".";
 
+	if (!old_style_args)
+		snprintf(line, sizeof line, " %.*s/", modlen, modname);
+
 	while (argc > 0) {
 		if (sargc >= MAX_ARGS - 1) {
 		  arg_overflow:
 			rprintf(FERROR, "internal: args[] overflowed in do_cmd()\n");
 			exit_cleanup(RERR_SYNTAX);
 		}
-		if (strncmp(*argv, modname, modlen) == 0
-		 && argv[0][modlen] == '\0')
+		if (strncmp(*argv, modname, modlen) == 0 && argv[0][modlen] == '\0')
 			sargs[sargc++] = modname; /* we send "modname/" */
-		else if (**argv == '-') {
-			if (asprintf(sargs + sargc++, "./%s", *argv) < 0)
-				out_of_memory("start_inband_exchange");
-		} else
-			sargs[sargc++] = *argv;
+		else {
+			char *arg = *argv;
+			int extra_chars = *arg == '-' ? 2 : 0; /* a leading dash needs a "./" prefix. */
+			/* If --old-args was not specified, make sure that the arg won't split at a mod name! */
+			if (!old_style_args && (p = strstr(arg, line)) != NULL) {
+				do {
+					extra_chars += 2;
+				} while ((p = strstr(p+1, line)) != NULL);
+			}
+			if (extra_chars) {
+				char *f = arg;
+				char *t = arg = new_array(char, strlen(arg) + extra_chars + 1);
+				if (*f == '-') {
+					*t++ = '.';
+					*t++ = '/';
+				}
+				while (*f) {
+					if (*f == ' ' && strncmp(f, line, modlen+2) == 0) {
+						*t++ = '[';
+						*t++ = *f++;
+						*t++ = ']';
+					} else
+						*t++ = *f++;
+				}
+				*t = '\0';
+			}
+			sargs[sargc++] = arg;
+		}
 		argv++;
 		argc--;
 	}
@@ -322,7 +392,7 @@ int start_inband_exchange(int f_in, int f_out, const char *user, int argc, char 
 
 	if (rl_nulls) {
 		for (i = 0; i < sargc; i++) {
-			if (!sargs[i]) /* stop at --protect-args NULL */
+			if (!sargs[i]) /* stop at --secluded-args NULL */
 				break;
 			write_sbuf(f_out, sargs[i]);
 			write_byte(f_out, 0);
@@ -347,62 +417,7 @@ int start_inband_exchange(int f_in, int f_out, const char *user, int argc, char 
 	return 0;
 }
 
-static char *finish_pre_exec(pid_t pid, int write_fd, int read_fd, char *request,
-			     char **early_argv, char **argv)
-{
-	char buf[BIGPATHBUFLEN], *bp;
-	int j = 0, status = -1, msglen = sizeof buf - 1;
-
-	if (!request)
-		request = "(NONE)";
-
-	write_buf(write_fd, request, strlen(request)+1);
-	if (early_argv) {
-		for ( ; *early_argv; early_argv++)
-			write_buf(write_fd, *early_argv, strlen(*early_argv)+1);
-		j = 1; /* Skip arg0 name in argv. */
-	}
-	for ( ; argv[j]; j++)
-		write_buf(write_fd, argv[j], strlen(argv[j])+1);
-	write_byte(write_fd, 0);
-
-	close(write_fd);
-
-	/* Read the stdout from the pre-xfer exec program.  This it is only
-	 * displayed to the user if the script also returns an error status. */
-	for (bp = buf; msglen > 0; msglen -= j) {
-		if ((j = read(read_fd, bp, msglen)) <= 0) {
-			if (j == 0)
-				break;
-			if (errno == EINTR)
-				continue;
-			break; /* Just ignore the read error for now... */
-		}
-		bp += j;
-		if (j > 1 && bp[-1] == '\n' && bp[-2] == '\r') {
-			bp--;
-			j--;
-			bp[-1] = '\n';
-		}
-	}
-	*bp = '\0';
-
-	close(read_fd);
-
-	if (wait_process(pid, &status, 0) < 0
-	 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		char *e;
-		if (asprintf(&e, "pre-xfer exec returned failure (%d)%s%s%s\n%s",
-			     status, status < 0 ? ": " : "",
-			     status < 0 ? strerror(errno) : "",
-			     *buf ? ":" : "", buf) < 0)
-			return "out_of_memory in finish_pre_exec\n";
-		return e;
-	}
-	return NULL;
-}
-
-#ifdef HAVE_PUTENV
+#if defined HAVE_SETENV || defined HAVE_PUTENV
 static int read_arg_from_pipe(int fd, char *buf, int limit)
 {
 	char *bp = buf, *eob = buf + limit - 1;
@@ -424,6 +439,204 @@ static int read_arg_from_pipe(int fd, char *buf, int limit)
 	return bp - buf;
 }
 #endif
+
+void set_env_str(const char *var, const char *str)
+{
+#ifdef HAVE_SETENV
+	if (setenv(var, str, 1) < 0)
+		out_of_memory("set_env_str");
+#else
+#ifdef HAVE_PUTENV
+	char *mem;
+	if (asprintf(&mem, "%s=%s", var, str) < 0)
+		out_of_memory("set_env_str");
+	putenv(mem);
+#else
+	(void)var;
+	(void)str;
+#endif
+#endif
+}
+
+#if defined HAVE_SETENV || defined HAVE_PUTENV
+
+static void set_envN_str(const char *var, int num, const char *str)
+{
+#ifdef HAVE_SETENV
+	char buf[128];
+	(void)snprintf(buf, sizeof buf, "%s%d", var, num);
+	if (setenv(buf, str, 1) < 0)
+		out_of_memory("set_env_str");
+#else
+#ifdef HAVE_PUTENV
+	char *mem;
+	if (asprintf(&mem, "%s%d=%s", var, num, str) < 0)
+		out_of_memory("set_envN_str");
+	putenv(mem);
+#endif
+#endif
+}
+
+void set_env_num(const char *var, long num)
+{
+#ifdef HAVE_SETENV
+	char val[64];
+	(void)snprintf(val, sizeof val, "%ld", num);
+	if (setenv(var, val, 1) < 0)
+		out_of_memory("set_env_str");
+#else
+#ifdef HAVE_PUTENV
+	char *mem;
+	if (asprintf(&mem, "%s=%ld", var, num) < 0)
+		out_of_memory("set_env_num");
+	putenv(mem);
+#endif
+#endif
+}
+
+/* Used for "early exec", "pre-xfer exec", and the "name converter" script. */
+static pid_t start_pre_exec(const char *cmd, int *arg_fd_ptr, int *error_fd_ptr)
+{
+	int arg_fds[2], error_fds[2], arg_fd;
+	pid_t pid;
+
+	if ((error_fd_ptr && pipe(error_fds) < 0) || pipe(arg_fds) < 0 || (pid = fork()) < 0)
+		return (pid_t)-1;
+
+	if (pid == 0) {
+		char buf[BIGPATHBUFLEN];
+		int j, len, status;
+
+		if (error_fd_ptr) {
+			close(error_fds[0]);
+			set_blocking(error_fds[1]);
+		}
+
+		close(arg_fds[1]);
+		arg_fd = arg_fds[0];
+		set_blocking(arg_fd);
+
+		len = read_arg_from_pipe(arg_fd, buf, BIGPATHBUFLEN);
+		if (len <= 0)
+			_exit(1);
+		set_env_str("RSYNC_REQUEST", buf);
+
+		for (j = 0; ; j++) {
+			len = read_arg_from_pipe(arg_fd, buf, BIGPATHBUFLEN);
+			if (len <= 0) {
+				if (!len)
+					break;
+				_exit(1);
+			}
+			set_envN_str("RSYNC_ARG", j, buf);
+		}
+
+		dup2(arg_fd, STDIN_FILENO);
+		close(arg_fd);
+
+		if (error_fd_ptr) {
+			dup2(error_fds[1], STDOUT_FILENO);
+			close(error_fds[1]);
+		}
+
+		status = shell_exec(cmd);
+
+		if (!WIFEXITED(status))
+			_exit(1);
+		_exit(WEXITSTATUS(status));
+	}
+
+	if (error_fd_ptr) {
+		close(error_fds[1]);
+		*error_fd_ptr = error_fds[0];
+		set_blocking(error_fds[0]);
+	}
+
+	close(arg_fds[0]);
+	arg_fd = *arg_fd_ptr = arg_fds[1];
+	set_blocking(arg_fd);
+
+	return pid;
+}
+
+#endif
+
+static void write_pre_exec_args(int write_fd, char *request, char **early_argv, char **argv, int exec_type)
+{
+	int j = 0;
+
+	if (!request)
+		request = "(NONE)";
+
+	write_buf(write_fd, request, strlen(request)+1);
+	if (early_argv) {
+		for ( ; *early_argv; early_argv++)
+			write_buf(write_fd, *early_argv, strlen(*early_argv)+1);
+		j = 1; /* Skip arg0 name in argv. */
+	}
+	if (argv) {
+		for ( ; argv[j]; j++)
+			write_buf(write_fd, argv[j], strlen(argv[j])+1);
+	}
+	write_byte(write_fd, 0);
+
+	if (exec_type == 1 && early_input_len)
+		write_buf(write_fd, early_input, early_input_len);
+
+	if (exec_type != 2) /* the name converter needs this left open */
+		close(write_fd);
+}
+
+static char *finish_pre_exec(const char *desc, pid_t pid, int read_fd)
+{
+	char buf[BIGPATHBUFLEN], *bp, *cr;
+	int j, status = -1, msglen = sizeof buf - 1;
+
+	if (read_fd >= 0) {
+		/* Read the stdout from the program.  This it is only displayed
+		 * to the user if the script also returns an error status. */
+		for (bp = buf, cr = buf; msglen > 0; msglen -= j) {
+			if ((j = read(read_fd, bp, msglen)) <= 0) {
+				if (j == 0)
+					break;
+				if (errno == EINTR)
+					continue;
+				break; /* Just ignore the read error for now... */
+			}
+			bp[j] = '\0';
+			while (1) {
+				if ((cr = strchr(cr, '\r')) == NULL) {
+					cr = bp + j;
+					break;
+				}
+				if (!cr[1])
+					break; /* wait for more data before we decide what to do */
+				if (cr[1] == '\n') {
+					memmove(cr, cr+1, j - (cr - bp));
+					j--;
+				} else
+					cr++;
+			}
+			bp += j;
+		}
+		*bp = '\0';
+
+		close(read_fd);
+	} else
+		*buf = '\0';
+
+	if (wait_process(pid, &status, 0) < 0
+	 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		char *e;
+		if (asprintf(&e, "%s returned failure (%d)%s%s%s\n%s",
+			     desc, status, status < 0 ? ": " : "",
+			     status < 0 ? strerror(errno) : "",
+			     *buf ? ":" : "", buf) < 0)
+			return "out_of_memory in finish_pre_exec\n";
+		return e;
+	}
+	return NULL;
+}
 
 static int path_failure(int f_out, const char *dir, BOOL was_chdir)
 {
@@ -476,26 +689,6 @@ static struct passwd *want_all_groups(int f_out, uid_t uid)
 }
 #endif
 
-static void set_env_str(const char *var, const char *str)
-{
-#ifdef HAVE_PUTENV
-	char *mem;
-	if (asprintf(&mem, "%s=%s", var, str) < 0)
-		out_of_memory("set_env_str");
-	putenv(mem);
-#endif
-}
-
-#ifdef HAVE_PUTENV
-static void set_env_num(const char *var, long num)
-{
-	char *mem;
-	if (asprintf(&mem, "%s=%ld", var, num) < 0)
-		out_of_memory("set_env_num");
-	putenv(mem);
-}
-#endif
-
 static int rsync_module(int f_in, int f_out, int i, const char *addr, const char *host)
 {
 	int argc;
@@ -508,7 +701,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	int set_uid;
 	char *p, *err_msg = NULL;
 	char *name = lp_name(i);
-	int use_chroot = lp_use_chroot(i);
+	int use_chroot = lp_use_chroot(i); /* might be 1 (yes), 0 (no), or -1 (unset) */
 	int ret, pre_exec_arg_fd = -1, pre_exec_error_fd = -1;
 	int save_munge_symlinks;
 	pid_t pre_exec_pid = 0;
@@ -526,7 +719,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	/* If reverse lookup is disabled globally but enabled for this module,
 	 * we need to do it now before the access check. */
 	if (host == undetermined_hostname && lp_reverse_lookup(i))
-		host = client_name(f_in);
+		host = client_name(client_addr(f_in));
 	set_env_str("RSYNC_HOST_NAME", host);
 	set_env_str("RSYNC_HOST_ADDR", addr);
 
@@ -543,7 +736,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 		return -1;
 	}
 
-	if (am_daemon && am_server) {
+	if (am_daemon > 0) {
 		rprintf(FLOG, "rsync allowed access on module %s from %s (%s)\n",
 			name, host, addr);
 	}
@@ -573,17 +766,17 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 
 	module_id = i;
 
-	if (lp_transfer_logging(i) && !logfile_format)
-		logfile_format = lp_log_format(i);
+	if (lp_transfer_logging(module_id) && !logfile_format)
+		logfile_format = lp_log_format(module_id);
 	if (log_format_has(logfile_format, 'i'))
 		logfile_format_has_i = 1;
 	if (logfile_format_has_i || log_format_has(logfile_format, 'o'))
 		logfile_format_has_o_or_i = 1;
 
 	uid = MY_UID();
-	am_root = (uid == 0);
+	am_root = (uid == ROOT_UID);
 
-	p = *lp_uid(i) ? lp_uid(i) : am_root ? NOBODY_USER : NULL;
+	p = *lp_uid(module_id) ? lp_uid(module_id) : am_root ? NOBODY_USER : NULL;
 	if (p) {
 		if (!user_to_uid(p, &uid, True)) {
 			rprintf(FLOG, "Invalid uid %s\n", p);
@@ -594,7 +787,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	} else
 		set_uid = 0;
 
-	p = *lp_gid(i) ? conf_strtok(lp_gid(i)) : NULL;
+	p = *lp_gid(module_id) ? conf_strtok(lp_gid(module_id)) : NULL;
 	if (p) {
 		/* The "*" gid must be the first item in the list. */
 		if (strcmp(p, "*") == 0) {
@@ -627,11 +820,25 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 			return -1;
 	}
 
-	module_dir = lp_path(i);
+	module_dir = lp_path(module_id);
 	if (*module_dir == '\0') {
 		rprintf(FLOG, "No path specified for module %s\n", name);
 		io_printf(f_out, "@ERROR: no path setting.\n");
 		return -1;
+	}
+	if (use_chroot < 0) {
+		if (strstr(module_dir, "/./") != NULL)
+			use_chroot = 1; /* The module is expecting a chroot inner & outer path. */
+		else if (chroot("/") < 0) {
+			rprintf(FLOG, "chroot test failed: %s. "
+				      "Switching 'use chroot' from unset to false.\n",
+				      strerror(errno));
+			use_chroot = 0;
+		} else {
+			if (chdir("/") < 0)
+			    rsyserr(FLOG, errno, "chdir(\"/\") failed");
+			use_chroot = 1;
+		}
 	}
 	if (use_chroot) {
 		if ((p = strstr(module_dir, "/./")) != NULL) {
@@ -664,37 +871,39 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	} else
 		set_filter_dir(module_dir, module_dirlen);
 
-	p = lp_filter(i);
+	p = lp_filter(module_id);
 	parse_filter_str(&daemon_filter_list, p, rule_template(FILTRULE_WORD_SPLIT),
-		   XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3);
+		XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3);
 
-	p = lp_include_from(i);
+	p = lp_include_from(module_id);
 	parse_filter_file(&daemon_filter_list, p, rule_template(FILTRULE_INCLUDE),
-	    XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES | XFLG_FATAL_ERRORS);
+		XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES | XFLG_FATAL_ERRORS);
 
-	p = lp_include(i);
+	p = lp_include(module_id);
 	parse_filter_str(&daemon_filter_list, p,
-		   rule_template(FILTRULE_INCLUDE | FILTRULE_WORD_SPLIT),
-		   XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES);
+		rule_template(FILTRULE_INCLUDE | FILTRULE_WORD_SPLIT),
+		XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES);
 
-	p = lp_exclude_from(i);
+	p = lp_exclude_from(module_id);
 	parse_filter_file(&daemon_filter_list, p, rule_template(0),
-	    XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES | XFLG_FATAL_ERRORS);
+		XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES | XFLG_FATAL_ERRORS);
 
-	p = lp_exclude(i);
+	p = lp_exclude(module_id);
 	parse_filter_str(&daemon_filter_list, p, rule_template(FILTRULE_WORD_SPLIT),
-		   XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES);
+		XFLG_ABS_IF_SLASH | XFLG_DIR2WILD3 | XFLG_OLD_PREFIXES);
 
 	log_init(1);
 
-#ifdef HAVE_PUTENV
-	if (*lp_prexfer_exec(i) || *lp_postxfer_exec(i)) {
-		int status;
+#if defined HAVE_SETENV || defined HAVE_PUTENV
+	if ((*lp_early_exec(module_id) || *lp_prexfer_exec(module_id)
+	  || *lp_postxfer_exec(module_id) || *lp_name_converter(module_id))
+	 && !getenv("RSYNC_NO_XFER_EXEC")) {
+		set_env_num("RSYNC_PID", (long)getpid());
 
 		/* For post-xfer exec, fork a new process to run the rsync
 		 * daemon while this process waits for the exit status and
 		 * runs the indicated command at that point. */
-		if (*lp_postxfer_exec(i)) {
+		if (*lp_postxfer_exec(module_id)) {
 			pid_t pid = fork();
 			if (pid < 0) {
 				rsyserr(FLOG, errno, "fork failed");
@@ -702,10 +911,10 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 				return -1;
 			}
 			if (pid) {
+				int status;
 				close(f_in);
 				if (f_out != f_in)
 					close(f_out);
-				set_env_num("RSYNC_PID", (long)pid);
 				if (wait_process(pid, &status, 0) < 0)
 					status = -1;
 				set_env_num("RSYNC_RAW_STATUS", status);
@@ -714,80 +923,61 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 				else
 					status = -1;
 				set_env_num("RSYNC_EXIT_STATUS", status);
-				if (system(lp_postxfer_exec(i)) < 0)
+				if (shell_exec(lp_postxfer_exec(module_id)) < 0)
 					status = -1;
 				_exit(status);
 			}
 		}
+
+		/* For early exec, fork a child process to run the indicated
+		 * command and wait for it to exit. */
+		if (*lp_early_exec(module_id)) {
+			int arg_fd;
+			pid_t pid = start_pre_exec(lp_early_exec(module_id), &arg_fd, NULL);
+			if (pid == (pid_t)-1) {
+				rsyserr(FLOG, errno, "early exec preparation failed");
+				io_printf(f_out, "@ERROR: early exec preparation failed\n");
+				return -1;
+			}
+			write_pre_exec_args(arg_fd, NULL, NULL, NULL, 1);
+			if (finish_pre_exec("early exec", pid, -1) != NULL) {
+				rsyserr(FLOG, errno, "early exec failed");
+				io_printf(f_out, "@ERROR: early exec failed\n");
+				return -1;
+			}
+		}
+
 		/* For pre-xfer exec, fork a child process to run the indicated
 		 * command, though it first waits for the parent process to
 		 * send us the user's request via a pipe. */
-		if (*lp_prexfer_exec(i)) {
-			int arg_fds[2], error_fds[2];
-			set_env_num("RSYNC_PID", (long)getpid());
-			if (pipe(arg_fds) < 0 || pipe(error_fds) < 0 || (pre_exec_pid = fork()) < 0) {
+		if (*lp_prexfer_exec(module_id)) {
+			pre_exec_pid = start_pre_exec(lp_prexfer_exec(module_id), &pre_exec_arg_fd, &pre_exec_error_fd);
+			if (pre_exec_pid == (pid_t)-1) {
 				rsyserr(FLOG, errno, "pre-xfer exec preparation failed");
 				io_printf(f_out, "@ERROR: pre-xfer exec preparation failed\n");
 				return -1;
 			}
-			if (pre_exec_pid == 0) {
-				char buf[BIGPATHBUFLEN];
-				int j, len;
-				close(arg_fds[1]);
-				close(error_fds[0]);
-				pre_exec_arg_fd = arg_fds[0];
-				pre_exec_error_fd = error_fds[1];
-				set_blocking(pre_exec_arg_fd);
-				set_blocking(pre_exec_error_fd);
-				len = read_arg_from_pipe(pre_exec_arg_fd, buf, BIGPATHBUFLEN);
-				if (len <= 0)
-					_exit(1);
-				set_env_str("RSYNC_REQUEST", buf);
-				for (j = 0; ; j++) {
-					len = read_arg_from_pipe(pre_exec_arg_fd, buf,
-								 BIGPATHBUFLEN);
-					if (len <= 0) {
-						if (!len)
-							break;
-						_exit(1);
-					}
-					if (asprintf(&p, "RSYNC_ARG%d=%s", j, buf) >= 0)
-						putenv(p);
-				}
-				close(pre_exec_arg_fd);
-				close(STDIN_FILENO);
-				dup2(pre_exec_error_fd, STDOUT_FILENO);
-				close(pre_exec_error_fd);
-				status = system(lp_prexfer_exec(i));
-				if (!WIFEXITED(status))
-					_exit(1);
-				_exit(WEXITSTATUS(status));
+		}
+
+		if (*lp_name_converter(module_id)) {
+			namecvt_pid = start_pre_exec(lp_name_converter(module_id), &namecvt_fd_req, &namecvt_fd_ans);
+			if (namecvt_pid == (pid_t)-1) {
+				rsyserr(FLOG, errno, "name-converter exec preparation failed");
+				io_printf(f_out, "@ERROR: name-converter exec preparation failed\n");
+				return -1;
 			}
-			close(arg_fds[0]);
-			close(error_fds[1]);
-			pre_exec_arg_fd = arg_fds[1];
-			pre_exec_error_fd = error_fds[0];
-			set_blocking(pre_exec_arg_fd);
-			set_blocking(pre_exec_error_fd);
 		}
 	}
 #endif
 
+	if (early_input) {
+		free(early_input);
+		early_input = NULL;
+	}
+
 	if (use_chroot) {
-		/*
-		 * XXX: The 'use chroot' flag is a fairly reliable
-		 * source of confusion, because it fails under two
-		 * important circumstances: running as non-root,
-		 * running on Win32 (or possibly others).  On the
-		 * other hand, if you are running as root, then it
-		 * might be better to always use chroot.
-		 *
-		 * So, perhaps if we can't chroot we should just issue
-		 * a warning, unless a "require chroot" flag is set,
-		 * in which case we fail.
-		 */
 		if (chroot(module_chdir)) {
-			rsyserr(FLOG, errno, "chroot %s failed", module_chdir);
+			rsyserr(FLOG, errno, "chroot(\"%s\") failed", module_chdir);
 			io_printf(f_out, "@ERROR: chroot failed\n");
 			return -1;
 		}
@@ -796,10 +986,10 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 
 	if (!change_dir(module_chdir, CD_NORMAL))
 		return path_failure(f_out, module_chdir, True);
-	if (module_dirlen || (!use_chroot && !*lp_daemon_chroot()))
+	if (module_dirlen)
 		sanitize_paths = 1;
 
-	if ((munge_symlinks = lp_munge_symlinks(i)) < 0)
+	if ((munge_symlinks = lp_munge_symlinks(module_id)) < 0)
 		munge_symlinks = !use_chroot || module_dirlen;
 	if (munge_symlinks) {
 		STRUCT_STAT st;
@@ -851,11 +1041,11 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 		}
 
 		our_uid = MY_UID();
-		am_root = (our_uid == 0);
+		am_root = (our_uid == ROOT_UID);
 	}
 
-	if (lp_temp_dir(i) && *lp_temp_dir(i)) {
-		tmpdir = lp_temp_dir(i);
+	if (lp_temp_dir(module_id) && *lp_temp_dir(module_id)) {
+		tmpdir = lp_temp_dir(module_id);
 		if (strlen(tmpdir) >= MAXPATHLEN - 10) {
 			rprintf(FLOG,
 				"the 'temp dir' value for %s is WAY too long -- ignoring.\n",
@@ -882,12 +1072,22 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	} else
 		orig_early_argv = NULL;
 
+	/* The default is to use the user's setting unless the module sets True or False. */
+	if (lp_open_noatime(module_id) >= 0)
+		open_noatime = lp_open_noatime(module_id);
+
 	munge_symlinks = save_munge_symlinks; /* The client mustn't control this. */
 
+	if (am_daemon > 0)
+		msgs2stderr = 0; /* A non-rsh-run daemon doesn't have stderr for msgs. */
+
 	if (pre_exec_pid) {
-		err_msg = finish_pre_exec(pre_exec_pid, pre_exec_arg_fd, pre_exec_error_fd,
-					  request, orig_early_argv, orig_argv);
+		write_pre_exec_args(pre_exec_arg_fd, request, orig_early_argv, orig_argv, 0);
+		err_msg = finish_pre_exec("pre-xfer exec", pre_exec_pid, pre_exec_error_fd);
 	}
+
+	if (namecvt_pid)
+		write_pre_exec_args(namecvt_fd_req, request, orig_early_argv, orig_argv, 2);
 
 	if (orig_early_argv)
 		free(orig_early_argv);
@@ -899,7 +1099,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	if (write_batch < 0)
 		dry_run = 1;
 
-	if (lp_fake_super(i)) {
+	if (lp_fake_super(module_id)) {
 		if (preserve_xattrs > 1)
 			preserve_xattrs = 1;
 		am_root = -1;
@@ -924,11 +1124,10 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 
 #ifndef DEBUG
 	/* don't allow the logs to be flooded too fast */
-	limit_output_verbosity(lp_max_verbosity(i));
+	limit_output_verbosity(lp_max_verbosity(module_id));
 #endif
 
-	if (protocol_version < 23
-	    && (protocol_version == 22 || am_sender))
+	if (protocol_version < 23 && (protocol_version == 22 || am_sender))
 		io_start_multiplex_out(f_out);
 	else if (!ret || err_msg) {
 		/* We have to get I/O multiplexing started so that we can
@@ -965,6 +1164,7 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 			}
 			if (*err_msg)
 				rprintf(FERROR, "%s\n", err_msg);
+			io_flush(MSG_FLUSH);
 		} else
 			option_error();
 		msleep(400);
@@ -985,20 +1185,21 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 #endif
 
 	if (!numeric_ids
-	 && (use_chroot ? lp_numeric_ids(i) != False : lp_numeric_ids(i) == True))
+	 && (use_chroot ? lp_numeric_ids(module_id) != False && !*lp_name_converter(module_id)
+		        : lp_numeric_ids(module_id) == True))
 		numeric_ids = -1; /* Set --numeric-ids w/o breaking protocol. */
 
-	if (lp_timeout(i) && (!io_timeout || lp_timeout(i) < io_timeout))
-		set_io_timeout(lp_timeout(i));
+	if (lp_timeout(module_id) && (!io_timeout || lp_timeout(module_id) < io_timeout))
+		set_io_timeout(lp_timeout(module_id));
 
 	/* If we have some incoming/outgoing chmod changes, append them to
 	 * any user-specified changes (making our changes have priority).
 	 * We also get a pointer to just our changes so that a receiver
 	 * process can use them separately if --perms wasn't specified. */
 	if (am_sender)
-		p = lp_outgoing_chmod(i);
+		p = lp_outgoing_chmod(module_id);
 	else
-		p = lp_incoming_chmod(i);
+		p = lp_incoming_chmod(module_id);
 	if (*p && !(daemon_chmod_modes = parse_chmod(p, &chmod_modes))) {
 		rprintf(FLOG, "Invalid \"%sing chmod\" directive: %s\n",
 			am_sender ? "outgo" : "incom", p);
@@ -1007,6 +1208,38 @@ static int rsync_module(int f_in, int f_out, int i, const char *addr, const char
 	start_server(f_in, f_out, argc, argv);
 
 	return 0;
+}
+
+BOOL namecvt_call(const char *cmd, const char **name_p, id_t *id_p)
+{
+	char buf[1024];
+	int got, len;
+
+	if (*name_p)
+		len = snprintf(buf, sizeof buf, "%s %s\n", cmd, *name_p);
+	else
+		len = snprintf(buf, sizeof buf, "%s %ld\n", cmd, (long)*id_p);
+	if (len >= (int)sizeof buf) {
+		rprintf(FERROR, "namecvt_call() request was too large.\n");
+		exit_cleanup(RERR_UNSUPPORTED);
+	}
+
+	while ((got = write(namecvt_fd_req, buf, len)) != len) {
+		if (got < 0 && errno == EINTR)
+			continue;
+		rprintf(FERROR, "Connection to name-converter failed.\n");
+		exit_cleanup(RERR_SOCKETIO);
+	}
+
+	if (!read_line_old(namecvt_fd_ans, buf, sizeof buf, 0))
+		return False;
+
+	if (*name_p)
+		*id_p = (id_t)atol(buf);
+	else
+		*name_p = strdup(buf);
+
+	return True;
 }
 
 /* send a list of available modules to the client. Don't list those
@@ -1028,7 +1261,7 @@ static void send_listing(int fd)
 static int load_config(int globals_only)
 {
 	if (!config_file) {
-		if (am_server && am_root <= 0)
+		if (am_daemon < 0 && am_root <= 0)
 			config_file = RSYNCD_USERCONF;
 		else
 			config_file = RSYNCD_SYSCONF;
@@ -1046,6 +1279,13 @@ int start_daemon(int f_in, int f_out)
 	char *p;
 	int i;
 
+	/* At this point, am_server is only set for a daemon started via rsh.
+	 * Because am_server gets forced on soon, we'll set am_daemon to -1 as
+	 * a flag that can be checked later on to distinguish a normal daemon
+	 * from an rsh-run daemon. */
+	if (am_server)
+		am_daemon = -1;
+
 	io_set_sock_fds(f_in, f_out);
 
 	/* We must load the config file before calling any function that
@@ -1055,11 +1295,18 @@ int start_daemon(int f_in, int f_out)
 	if (!load_config(0))
 		exit_cleanup(RERR_SYNTAX);
 
+	if (lp_proxy_protocol() && !read_proxy_protocol_header(f_in))
+		return -1;
+
 	p = lp_daemon_chroot();
 	if (*p) {
 		log_init(0); /* Make use we've initialized syslog before chrooting. */
-		if (chroot(p) < 0 || chdir("/") < 0) {
-			rsyserr(FLOG, errno, "daemon chroot %s failed", p);
+		if (chroot(p) < 0) {
+			rsyserr(FLOG, errno, "daemon chroot(\"%s\") failed", p);
+			return -1;
+		}
+		if (chdir("/") < 0) {
+			rsyserr(FLOG, errno, "daemon chdir(\"/\") failed");
 			return -1;
 		}
 	}
@@ -1088,14 +1335,14 @@ int start_daemon(int f_in, int f_out)
 			return -1;
 		}
 		our_uid = MY_UID();
-		am_root = (our_uid == 0);
+		am_root = (our_uid == ROOT_UID);
 	}
 
 	addr = client_addr(f_in);
-	host = lp_reverse_lookup(-1) ? client_name(f_in) : undetermined_hostname;
+	host = lp_reverse_lookup(-1) ? client_name(addr) : undetermined_hostname;
 	rprintf(FLOG, "connect from %s (%s)\n", host, addr);
 
-	if (!am_server) {
+	if (am_daemon > 0) {
 		set_socket_options(f_in, "SO_KEEPALIVE");
 		set_nonblocking(f_in);
 	}
@@ -1106,6 +1353,19 @@ int start_daemon(int f_in, int f_out)
 	line[0] = 0;
 	if (!read_line_old(f_in, line, sizeof line, 0))
 		return -1;
+
+	if (strncmp(line, EARLY_INPUT_CMD, EARLY_INPUT_CMDLEN) == 0) {
+		early_input_len = strtol(line + EARLY_INPUT_CMDLEN, NULL, 10);
+		if (early_input_len <= 0 || early_input_len > BIGPATHBUFLEN) {
+			io_printf(f_out, "@ERROR: invalid early_input length\n");
+			return -1;
+		}
+		early_input = new_array(char, early_input_len);
+		read_buf(f_in, early_input, early_input_len);
+
+		if (!read_line_old(f_in, line, sizeof line, 0))
+			return -1;
+	}
 
 	if (!*line || strcmp(line, "#list") == 0) {
 		rprintf(FLOG, "module-list request from %s (%s)\n",
@@ -1138,26 +1398,65 @@ int start_daemon(int f_in, int f_out)
 static void create_pid_file(void)
 {
 	char *pid_file = lp_pid_file();
-	char pidbuf[16];
-	pid_t pid = getpid();
-	int fd, len;
+	char pidbuf[32];
+	STRUCT_STAT st1, st2;
+	char *fail = NULL;
 
 	if (!pid_file || !*pid_file)
 		return;
 
-	cleanup_set_pid(pid);
-	if ((fd = do_open(pid_file, O_WRONLY|O_CREAT|O_EXCL, 0666)) == -1) {
-	  failure:
-		cleanup_set_pid(0);
-		fprintf(stderr, "failed to create pid file %s: %s\n", pid_file, strerror(errno));
-		rsyserr(FLOG, errno, "failed to create pid file %s", pid_file);
+#ifdef O_NOFOLLOW
+#define SAFE_OPEN_FLAGS (O_CREAT|O_NOFOLLOW)
+#else
+#define SAFE_OPEN_FLAGS (O_CREAT)
+#endif
+
+	/* These tests make sure that a temp-style lock dir is handled safely. */
+	st1.st_mode = 0;
+	if (do_lstat(pid_file, &st1) == 0 && !S_ISREG(st1.st_mode) && unlink(pid_file) < 0)
+		fail = "unlink";
+	else if ((pid_file_fd = do_open(pid_file, O_RDWR|SAFE_OPEN_FLAGS, 0664)) < 0)
+		fail = S_ISREG(st1.st_mode) ? "open" : "create";
+	else if (!lock_range(pid_file_fd, 0, 4))
+		fail = "lock";
+	else if (do_fstat(pid_file_fd, &st1) < 0)
+		fail = "fstat opened";
+	else if (st1.st_size > (int)sizeof pidbuf)
+		fail = "find small";
+	else if (do_lstat(pid_file, &st2) < 0)
+		fail = "lstat";
+	else if (!S_ISREG(st1.st_mode))
+		fail = "avoid file overwrite race for";
+	else if (st1.st_dev != st2.st_dev || st1.st_ino != st2.st_ino)
+		fail = "verify stat info for";
+#ifdef HAVE_FTRUNCATE
+	else if (do_ftruncate(pid_file_fd, 0) < 0)
+		fail = "truncate";
+#endif
+	else {
+		pid_t pid = getpid();
+		int len = snprintf(pidbuf, sizeof pidbuf, "%d\n", (int)pid);
+#ifndef HAVE_FTRUNCATE
+		/* What can we do with a too-long file and no truncate? I guess we'll add extra newlines. */
+		while (len < st1.st_size) /* We already verified that st_size chars fits in the buffer. */
+			pidbuf[len++] = '\n';
+		/* We don't need the buffer to end in a '\0' (and we may not have room to add it). */
+#endif
+		if (write(pid_file_fd, pidbuf, len) != len)
+			 fail = "write";
+		cleanup_set_pid(pid); /* Mark the file for removal on exit, even if the write failed. */
+	}
+
+	if (fail) {
+		char msg[1024];
+		snprintf(msg, sizeof msg, "failed to %s pid file %s: %s\n",
+			fail, pid_file, strerror(errno));
+		fputs(msg, stderr);
+		rprintf(FLOG, "%s", msg);
 		exit_cleanup(RERR_FILEIO);
 	}
-	snprintf(pidbuf, sizeof pidbuf, "%d\n", (int)pid);
-	len = strlen(pidbuf);
-	if (write(fd, pidbuf, len) != len)
-		goto failure;
-	close(fd);
+
+	/* The file is left open so that the lock remains valid. It is closed in our forked child procs. */
 }
 
 /* Become a daemon, discarding the controlling terminal. */
@@ -1229,7 +1528,7 @@ int daemon_main(void)
 	log_init(0);
 
 	rprintf(FLOG, "rsyncd version %s starting, listening on port %d\n",
-		RSYNC_VERSION, rsync_port);
+		rsync_version(), rsync_port);
 	/* TODO: If listening on a particular address, then show that
 	 * address too.  In fact, why not just do getnameinfo on the
 	 * local address??? */

@@ -1,6 +1,6 @@
 /* Inline functions for rsync.
  *
- * Copyright (C) 2007-2015 Wayne Davison
+ * Copyright (C) 2007-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,8 +19,7 @@
 static inline void
 alloc_xbuf(xbuf *xb, size_t sz)
 {
-	if (!(xb->buf = new_array(char, sz)))
-		out_of_memory("alloc_xbuf");
+	xb->buf = new_array(char, sz);
 	xb->size = sz;
 	xb->len = xb->pos = 0;
 }
@@ -29,8 +28,6 @@ static inline void
 realloc_xbuf(xbuf *xb, size_t sz)
 {
 	char *bf = realloc_array(xb->buf, char, sz);
-	if (!bf)
-		out_of_memory("realloc_xbuf");
 	xb->buf = bf;
 	xb->size = sz;
 }
@@ -78,6 +75,7 @@ d_name(struct dirent *di)
 static inline void
 init_stat_x(stat_x *sx_p)
 {
+	sx_p->crtime = 0;
 #ifdef SUPPORT_ACLS
 	sx_p->acc_acl = sx_p->def_acl = NULL;
 #endif
@@ -103,4 +101,12 @@ free_stat_x(stat_x *sx_p)
 		free_xattr(sx_p);
     }
 #endif
+}
+
+static inline char *my_strdup(const char *str, const char *file, int line)
+{
+    int len = strlen(str)+1;
+    char *buf = my_alloc(NULL, len, 1, file, line);
+    memcpy(buf, str, len);
+    return buf;
 }

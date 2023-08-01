@@ -21,13 +21,10 @@
 
 . "$suitedir/rsync.fns"
 
-chkfile="$scratchdir/rsync.chk"
-outfile="$scratchdir/rsync.out"
-
 SSH="src/support/lsh.sh --no-cd"
 FILE_REPL='s/^\([^d][^ ]*\) *\(..........[0-9]\) /\1 \2 /'
 DIR_REPL='s/^\(d[^ ]*\)  *[0-9][.,0-9]* /\1         DIR /'
-LS_REPL='s;[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9];####/##/## ##:##:##;'
+LS_REPL='s;[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] ;####/##/## ##:##:## ;g'
 
 build_rsyncd_conf
 
@@ -41,14 +38,14 @@ cd "$scratchdir"
 
 ln -s test-rsyncd.conf rsyncd.conf
 
+my_uid=`get_testuid`
+root_uid=`get_rootuid`
 confopt=''
-case `get_testuid` in
-0)
+if test x"$my_uid" = x"$root_uid"; then
     # Root needs to specify the config file, or it uses /etc/rsyncd.conf.
     echo "Forcing --config=$conf"
     confopt=" --config=$conf"
-    ;;
-esac
+fi
 
 # These have a space-padded 15-char name, then a tab, then a comment.
 sed 's/NOCOMMENT//' <<EOT >"$chkfile"
@@ -57,21 +54,17 @@ test-to        	r/w
 test-scratch   	NOCOMMENT
 EOT
 
-$RSYNC -ve "$SSH" --rsync-path="$RSYNC$confopt" localhost:: | tee "$outfile"
+checkdiff2 "$RSYNC -ve '$SSH' --rsync-path='$RSYNC$confopt' localhost::"
 echo '===='
-diff $diffopt "$chkfile" "$outfile" || test_fail "test 0 failed"
 
 RSYNC_CONNECT_PROG="$RSYNC --config=$conf --daemon"
 export RSYNC_CONNECT_PROG
 
-$RSYNC -v localhost:: | tee "$outfile"
+checkdiff2 "$RSYNC -v localhost::"
 echo '===='
-diff $diffopt "$chkfile" "$outfile" || test_fail "test 1 failed"
 
-$RSYNC -r localhost::test-hidden \
-    | sed "$FILE_REPL" | sed "$DIR_REPL" | sed "$LS_REPL" \
-    | tee "$outfile"
-cat <<EOT >"$chkfile"
+checkdiff "$RSYNC -r localhost::test-hidden" \
+	"sed -e '$FILE_REPL' -e '$DIR_REPL' -e '$LS_REPL'" <<EOT
 drwxr-xr-x         DIR ####/##/## ##:##:## .
 drwxr-xr-x         DIR ####/##/## ##:##:## bar
 -rw-r--r--           4 ####/##/## ##:##:## bar/two
@@ -80,14 +73,18 @@ drwxr-xr-x         DIR ####/##/## ##:##:## bar/baz
 drwxr-xr-x         DIR ####/##/## ##:##:## foo
 -rw-r--r--           4 ####/##/## ##:##:## foo/one
 EOT
-diff $diffopt "$chkfile" "$outfile" || test_fail "test 2 failed"
 
-$RSYNC -r localhost::test-from/f* \
-    | sed "$FILE_REPL" | sed "$DIR_REPL" | sed "$LS_REPL" \
-    | tee "$outfile"
-cat <<EOT >"$chkfile"
+checkdiff "$RSYNC -r localhost::test-from/f*" \
+	"sed -e '$FILE_REPL' -e '$DIR_REPL' -e '$LS_REPL'" <<EOT
 drwxr-xr-x         DIR ####/##/## ##:##:## foo
 -rw-r--r--           4 ####/##/## ##:##:## foo/one
 EOT
 diff $diffopt "$chkfile" "$outfile" || test_fail "test 3 failed"
 
+if $RSYNC -VV | grep '"atimes": true' >/dev/null; then
+    checkdiff "$RSYNC -rU localhost::test-from/f*" \
+	"sed -e '$FILE_REPL' -e '$DIR_REPL' -e '$LS_REPL'" <<EOT
+drwxr-xr-x         DIR ####/##/## ##:##:##                     foo
+-rw-r--r--           4 ####/##/## ##:##:## ####/##/## ##:##:## foo/one
+EOT
+fi

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+if [ -n "${DEB_HOST_GNU_TYPE:-}" ]; then
+  CROSS_COMPILE="--host=$DEB_HOST_GNU_TYPE"
+else
+  CROSS_COMPILE=
+fi
+
+# Create needed files for tests
+# Supress warnings (autopkg treats them as failures)
+./prepare-source build 2>/dev/null
+./configure.sh "$CROSS_COMPILE" 2>/dev/null
+
+# Supress gcc warnings (autopkg treats them as failures)
+make tls getgroups getfsdev trimslash t_unsafe wildtest testrun 2>/dev/null
+
+# Run tests
+rsync_bin="/usr/bin/rsync" ./runtests.sh

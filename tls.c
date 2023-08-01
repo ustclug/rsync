@@ -2,7 +2,7 @@
  * Trivial ls for comparing two directories after running an rsync.
  *
  * Copyright (C) 2001, 2002 Martin Pool <mbp@samba.org>
- * Copyright (C) 2003-2015 Wayne Davison
+ * Copyright (C) 2003-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -49,10 +49,6 @@ int list_only = 0;
 int link_times = 0;
 int link_owner = 0;
 int nsec_times = 0;
-int preserve_perms = 0;
-int preserve_executability = 0;
-int preallocate_files = 0;
-int inplace = 0;
 
 #ifdef SUPPORT_XATTRS
 
@@ -64,7 +60,8 @@ int inplace = 0;
 
 static int stat_xattr(const char *fname, STRUCT_STAT *fst)
 {
-	int mode, rdev_major, rdev_minor, uid, gid, len;
+	unsigned int mode;
+	int rdev_major, rdev_minor, uid, gid, len;
 	char buf[256];
 
 	if (am_root >= 0 || IS_DEVICE(fst->st_mode) || IS_SPECIAL(fst->st_mode))
@@ -111,6 +108,11 @@ static int stat_xattr(const char *fname, STRUCT_STAT *fst)
 
 #endif
 
+static int display_atimes = 0;
+#ifdef SUPPORT_CRTIMES
+static int display_crtimes = 0;
+#endif
+
 static void failed(char const *what, char const *where)
 {
 	fprintf(stderr, PROGRAM ": %s %s: %s\n",
@@ -118,16 +120,49 @@ static void failed(char const *what, char const *where)
 	exit(1);
 }
 
+static void storetime(char *dest, size_t destsize, time_t t, int nsecs)
+{
+	if (t) {
+		int len;
+		struct tm *mt = gmtime(&t);
+
+		len = snprintf(dest, destsize,
+			" %04d-%02d-%02d %02d:%02d:%02d",
+			(int)mt->tm_year + 1900,
+			(int)mt->tm_mon + 1,
+			(int)mt->tm_mday,
+			(int)mt->tm_hour,
+			(int)mt->tm_min,
+			(int)mt->tm_sec);
+		if (nsecs >= 0 && len >= 0)
+			snprintf(dest + len, destsize - len, ".%09d", nsecs);
+	} else {
+		int has_nsecs = nsecs >= 0 ? 1 : 0;
+		int len = MIN(20 + 10*has_nsecs, (int)destsize - 1);
+		memset(dest, ' ', len);
+		dest[len] = '\0';
+	}
+}
+
 static void list_file(const char *fname)
 {
 	STRUCT_STAT buf;
+#ifdef SUPPORT_CRTIMES
+	time_t crtime = 0;
+#endif
 	char permbuf[PERMSTRING_SIZE];
-	struct tm *mt;
-	char datebuf[50];
+	char mtimebuf[50];
+	char atimebuf[50];
+	char crtimebuf[50];
 	char linkbuf[4096];
+	int nsecs;
 
 	if (do_lstat(fname, &buf) < 0)
 		failed("stat", fname);
+#ifdef SUPPORT_CRTIMES
+	if (display_crtimes && (crtime = get_create_time(fname, &buf)) == 0)
+		failed("get_create_time", fname);
+#endif
 #ifdef SUPPORT_XATTRS
 	if (am_root < 0)
 		stat_xattr(fname, &buf);
@@ -150,58 +185,54 @@ static void list_file(const char *fname)
 			buf.st_uid = buf.st_gid = 0;
 		strlcpy(linkbuf, " -> ", sizeof linkbuf);
 		/* const-cast required for silly UNICOS headers */
-		len = do_readlink((char *) fname, linkbuf+4, sizeof(linkbuf) - 4);
+		len = do_readlink((char*)fname, linkbuf+4, sizeof linkbuf - 4);
 		if (len == -1)
 			failed("do_readlink", fname);
 		else
 			/* it's not nul-terminated */
 			linkbuf[4+len] = 0;
 	} else {
-		linkbuf[0] = 0;
+		linkbuf[0] = '\0';
 	}
 
 	permstring(permbuf, buf.st_mode);
-
-	if (buf.st_mtime) {
-		int len;
-		mt = gmtime(&buf.st_mtime);
-
-		len = snprintf(datebuf, sizeof datebuf,
-			"%04d-%02d-%02d %02d:%02d:%02d",
-			(int)mt->tm_year + 1900,
-			(int)mt->tm_mon + 1,
-			(int)mt->tm_mday,
-			(int)mt->tm_hour,
-			(int)mt->tm_min,
-			(int)mt->tm_sec);
 #ifdef ST_MTIME_NSEC
-		if (nsec_times) {
-			snprintf(datebuf + len, sizeof datebuf - len,
-				".%09d", (int)buf.ST_MTIME_NSEC);
-		}
+	if (nsec_times)
+		nsecs = (int)buf.ST_MTIME_NSEC;
+	else
 #endif
-	} else {
-		int len = MIN(19 + 9*nsec_times, (int)sizeof datebuf - 1);
-		memset(datebuf, ' ', len);
-		datebuf[len] = '\0';
-	}
+		nsecs = -1;
+	storetime(mtimebuf, sizeof mtimebuf, buf.st_mtime, nsecs);
+	if (display_atimes)
+		storetime(atimebuf, sizeof atimebuf, S_ISDIR(buf.st_mode) ? 0 : buf.st_atime, -1);
+	else
+		atimebuf[0] = '\0';
+#ifdef SUPPORT_CRTIMES
+	if (display_crtimes)
+		storetime(crtimebuf, sizeof crtimebuf, crtime, -1);
+	else
+#endif
+		crtimebuf[0] = '\0';
 
 	/* TODO: Perhaps escape special characters in fname? */
-
 	printf("%s ", permbuf);
+
 	if (S_ISCHR(buf.st_mode) || S_ISBLK(buf.st_mode)) {
-		printf("%5ld,%6ld",
-		    (long)major(buf.st_rdev),
-		    (long)minor(buf.st_rdev));
+		printf("%5ld,%6ld", (long)major(buf.st_rdev), (long)minor(buf.st_rdev));
 	} else
 		printf("%15s", do_big_num(buf.st_size, 1, NULL));
-	printf(" %6ld.%-6ld %6ld %s %s%s\n",
+
+	printf(" %6ld.%-6ld %6ld%s%s%s %s%s\n",
 	       (long)buf.st_uid, (long)buf.st_gid, (long)buf.st_nlink,
-	       datebuf, fname, linkbuf);
+	       mtimebuf, atimebuf, crtimebuf, fname, linkbuf);
 }
 
 static struct poptOption long_options[] = {
   /* longName, shortName, argInfo, argPtr, value, descrip, argDesc */
+  {"atimes",          'U', POPT_ARG_NONE,   &display_atimes, 0, 0, 0},
+#ifdef SUPPORT_CRTIMES
+  {"crtimes",         'N', POPT_ARG_NONE,   &display_crtimes, 0, 0, 0},
+#endif
   {"link-times",      'l', POPT_ARG_NONE,   &link_times, 0, 0, 0 },
   {"link-owner",      'L', POPT_ARG_NONE,   &link_owner, 0, 0, 0 },
 #ifdef SUPPORT_XATTRS
@@ -214,12 +245,16 @@ static struct poptOption long_options[] = {
   {0,0,0,0,0,0,0}
 };
 
-static void tls_usage(int ret)
+static void NORETURN tls_usage(int ret)
 {
   FILE *F = ret ? stderr : stdout;
   fprintf(F,"usage: " PROGRAM " [OPTIONS] FILE ...\n");
   fprintf(F,"Trivial file listing program for portably checking rsync\n");
   fprintf(F,"\nOptions:\n");
+  fprintf(F," -U, --atimes                display access (last-used) times\n");
+#ifdef SUPPORT_CRTIMES
+  fprintf(F," -N, --crtimes               display create times (newness)\n");
+#endif
   fprintf(F," -l, --link-times            display the time on a symlink\n");
   fprintf(F," -L, --link-owner            display the owner+group on a symlink\n");
 #ifdef SUPPORT_XATTRS
@@ -236,15 +271,13 @@ main(int argc, char *argv[])
 	const char **extra_args;
 	int opt;
 
-	pc = poptGetContext(PROGRAM, argc, (const char **)argv,
-			    long_options, 0);
+	pc = poptGetContext(PROGRAM, argc, (const char **)argv, long_options, 0);
 	while ((opt = poptGetNextOpt(pc)) != -1) {
 		switch (opt) {
 		case 'h':
 			tls_usage(0);
 		default:
-			fprintf(stderr,
-			        "%s: %s\n",
+			fprintf(stderr, "%s: %s\n",
 				poptBadOption(pc, POPT_BADOPTION_NOALIAS),
 				poptStrerror(opt));
 			tls_usage(1);

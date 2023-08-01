@@ -2,7 +2,7 @@
  * Copyright (C) 1996, 2000 Andrew Tridgell
  * Copyright (C) 1996 Paul Mackerras
  * Copyright (C) 2001, 2002 Martin Pool <mbp@samba.org>
- * Copyright (C) 2003-2015 Wayne Davison
+ * Copyright (C) 2003-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 
 #define False 0
 #define True 1
+#define Unset (-1) /* Our BOOL values are always an int. */
 
 #define BLOCK_SIZE 700
 #define RSYNC_RSH_ENV "RSYNC_RSH"
@@ -52,16 +53,24 @@
 #define XMIT_SAME_NAME (1<<5)
 #define XMIT_LONG_NAME (1<<6)
 #define XMIT_SAME_TIME (1<<7)
+
 #define XMIT_SAME_RDEV_MAJOR (1<<8)	/* protocols 28 - now (devices only) */
 #define XMIT_NO_CONTENT_DIR (1<<8)	/* protocols 30 - now (dirs only) */
-#define XMIT_HLINKED (1<<9)		/* protocols 28 - now */
+#define XMIT_HLINKED (1<<9)		/* protocols 28 - now (non-dirs) */
 #define XMIT_SAME_DEV_pre30 (1<<10)	/* protocols 28 - 29  */
 #define XMIT_USER_NAME_FOLLOWS (1<<10)	/* protocols 30 - now */
-#define XMIT_RDEV_MINOR_8_pre30 (1<<11)	/* protocols 28 - 29  */
+#define XMIT_RDEV_MINOR_8_pre30 (1<<11) /* protocols 28 - 29  */
 #define XMIT_GROUP_NAME_FOLLOWS (1<<11) /* protocols 30 - now */
 #define XMIT_HLINK_FIRST (1<<12)	/* protocols 30 - now (HLINKED files only) */
 #define XMIT_IO_ERROR_ENDLIST (1<<12)	/* protocols 31*- now (w/XMIT_EXTENDED_FLAGS) (also protocol 30 w/'f' compat flag) */
 #define XMIT_MOD_NSEC (1<<13)		/* protocols 31 - now */
+#define XMIT_SAME_ATIME (1<<14) 	/* any protocol - restricted by command-line option */
+#define XMIT_UNUSED_15 (1<<15)  	/* unused flag bit */
+
+/* The following XMIT flags require an rsync that uses a varint for the flag values */
+
+#define XMIT_RESERVED_16 (1<<16) 	/* reserved for future fileflags use */
+#define XMIT_CRTIME_EQ_MTIME (1<<17)	/* any protocol - restricted by command-line option */
 
 /* These flags are used in the live flist data. */
 
@@ -87,9 +96,11 @@
 /* These flags are passed to functions but not stored. */
 
 #define FLAG_DIVERT_DIRS (1<<16)   /* sender, but must be unique */
+#define FLAG_PERHAPS_DIR (1<<17)   /* generator */
 
 /* These flags are for get_dirlist(). */
 #define GDL_IGNORE_FILTER_RULES (1<<0)
+#define GDL_PERHAPS_DIR (1<<1)
 
 /* Some helper macros for matching bits. */
 #define BITS_SET(val,bits) (((val) & (bits)) == (bits))
@@ -97,12 +108,22 @@
 #define BITS_EQUAL(b1,b2,mask) (((unsigned)(b1) & (unsigned)(mask)) \
 			     == ((unsigned)(b2) & (unsigned)(mask)))
 
-/* update this if you make incompatible changes */
+/* Update this if you make incompatible changes and ALSO update the
+ * SUBPROTOCOL_VERSION if it is not a final (official) release. */
 #define PROTOCOL_VERSION 31
 
-/* This is used when working on a new protocol version in CVS, and should
- * be a new non-zero value for each CVS change that affects the protocol.
- * It must ALWAYS be 0 when the protocol goes final (and NEVER before)! */
+/* This is used when working on a new protocol version or for any unofficial
+ * protocol tweaks.  It should be a non-zero value for each pre-release repo
+ * change that affects the protocol. The official pre-release versions should
+ * start with 1 (after incrementing the PROTOCOL_VERSION) and go up by 1 for
+ * each new protocol change.  For unofficial changes, pick a fairly large
+ * random number that will hopefully not collide with anyone else's unofficial
+ * protocol.  It must ALWAYS be 0 when the protocol goes final (and official)
+ * and NEVER before!  When rsync negotiates a protocol match, it will only
+ * allow the newest protocol to be used if the SUBPROTOCOL_VERSION matches.
+ * All older protocol versions MUST be compatible with the final, official
+ * release of the protocol, so don't tweak the code to change the protocol
+ * behavior for an older protocol version. */
 #define SUBPROTOCOL_VERSION 0
 
 /* We refuse to interoperate with versions that are not in this range.
@@ -151,6 +172,10 @@
 #define MAX_BASIS_DIRS 20
 #define MAX_SERVER_ARGS (MAX_BASIS_DIRS*2 + 100)
 
+#define COMPARE_DEST 1
+#define COPY_DEST 2
+#define LINK_DEST 3
+
 #define MPLEX_BASE 7
 
 #define NO_FILTERS	0
@@ -165,7 +190,11 @@
 
 #define ATTRS_REPORT		(1<<0)
 #define ATTRS_SKIP_MTIME	(1<<1)
+#define ATTRS_ACCURATE_TIME	(1<<2)
+#define ATTRS_SKIP_ATIME	(1<<3)
+#define ATTRS_SKIP_CRTIME	(1<<5)
 
+#define MSG_FLUSH	2
 #define FULL_FLUSH	1
 #define NORMAL_FLUSH	0
 
@@ -191,6 +220,7 @@
 #define ITEM_REPORT_GROUP (1<<6)
 #define ITEM_REPORT_ACL (1<<7)
 #define ITEM_REPORT_XATTR (1<<8)
+#define ITEM_REPORT_CRTIME (1<<10)
 #define ITEM_BASIS_TYPE_FOLLOWS (1<<11)
 #define ITEM_XNAME_FOLLOWS (1<<12)
 #define ITEM_IS_NEW (1<<13)
@@ -245,6 +275,10 @@ enum msgcode {
 	MSG_SUCCESS=100,/* successfully updated indicated flist index */
 	MSG_DELETED=101,/* successfully deleted a file on receiving side */
 	MSG_NO_SEND=102,/* sender failed to open a file we wanted */
+};
+
+enum filetype {
+	FT_UNSUPPORTED, FT_REG, FT_DIR, FT_SYMLINK, FT_SPECIAL, FT_DEVICE
 };
 
 #define NDX_DONE -1
@@ -304,6 +338,9 @@ enum delret {
 # endif
 # include <string.h>
 #endif
+#ifdef HAVE_BSD_STRING_H
+# include <bsd/string.h>
+#endif
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif
@@ -329,16 +366,10 @@ enum delret {
 #include <sys/socket.h>
 #endif
 
-#ifdef TIME_WITH_SYS_TIME
-#include <sys/time.h>
-#include <time.h>
-#else
 #ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>
-#else
+#endif
 #include <time.h>
-#endif
-#endif
 
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
@@ -391,10 +422,13 @@ enum delret {
 #ifdef CAN_SET_NSEC
 #ifdef HAVE_STRUCT_STAT_ST_MTIM_TV_NSEC
 #define ST_MTIME_NSEC st_mtim.tv_nsec
+#define ST_ATIME_NSEC st_atim.tv_nsec
 #elif defined(HAVE_STRUCT_STAT_ST_MTIMENSEC)
 #define ST_MTIME_NSEC st_mtimensec
+#define ST_ATIME_NSEC st_atimensec
 #elif defined(HAVE_STRUCT_STAT_ST_MTIMESPEC_TV_NSEC)
 #define ST_MTIME_NSEC st_mtimespec.tv_nsec
+#define ST_ATIME_NSEC st_atimespec.tv_nsec
 #endif
 #endif
 
@@ -420,7 +454,9 @@ enum delret {
 #include <netdb.h>
 #endif
 #include <syslog.h>
+#ifdef HAVE_SYS_FILE_H
 #include <sys/file.h>
+#endif
 
 #ifdef HAVE_DIRENT_H
 # include <dirent.h>
@@ -449,7 +485,22 @@ enum delret {
 #ifdef MAKEDEV_TAKES_3_ARGS
 #define MAKEDEV(devmajor,devminor) makedev(0,devmajor,devminor)
 #else
+#ifndef __TANDEM
 #define MAKEDEV(devmajor,devminor) makedev(devmajor,devminor)
+#else
+# define major DEV_TO_MAJOR
+# define minor DEV_TO_MINOR
+# define MAKEDEV MAJORMINOR_TO_DEV
+#endif
+#endif
+
+#ifdef __TANDEM
+# include <floss.h(floss_read,floss_write,floss_fork,floss_execvp)>
+# include <floss.h(floss_getpwuid,floss_select,floss_seteuid)>
+# define S_IEXEC S_IXUSR
+# define ROOT_UID 65535
+#else
+# define ROOT_UID 0
 #endif
 
 #ifdef HAVE_COMPAT_H
@@ -526,6 +577,14 @@ typedef unsigned int size_t;
 #else
 # define uint16 unsigned int16
 #endif
+#endif
+
+#if !defined __APPLE__ || defined HAVE_GETATTRLIST
+#define SUPPORT_ATIMES 1
+#endif
+
+#if defined HAVE_GETATTRLIST || defined __CYGWIN__
+#define SUPPORT_CRTIMES 1
 #endif
 
 /* Find a variable that is either exactly 32-bits or longer.
@@ -615,6 +674,9 @@ typedef unsigned int size_t;
 # define SIZEOF_INT64 SIZEOF_OFF_T
 #endif
 
+#define HT_KEY32 0
+#define HT_KEY64 1
+
 struct hashtable {
 	void *nodes;
 	int32 size, entries;
@@ -668,6 +730,10 @@ struct ht_int64_node {
 #define NAME_MAX 255
 #endif
 
+#ifndef SIZE_MAX
+#define SIZE_MAX ((size_t)-1)
+#endif
+
 #ifndef INADDR_NONE
 #define INADDR_NONE 0xffffffff
 #endif
@@ -697,9 +763,38 @@ struct ht_int64_node {
 #endif
 #endif
 
+#if SIZEOF_CHARP == 4
+# define PTRS_ARE_32 1
+# define PTR_EXTRA_CNT 1
+#elif SIZEOF_CHARP == 8
+# define PTRS_ARE_64 1
+# define PTR_EXTRA_CNT EXTRA64_CNT
+#else
+# error Character pointers are not 4 or 8 bytes.
+#endif
+
+#if defined __STDC_VERSION__ && __STDC_VERSION__ >= 199901L
+#define USE_FLEXIBLE_ARRAY 1
+#define SIZE_T_FMT_MOD "z" /* printf supports %zd */
+#define SIZE_T_FMT_CAST size_t
+#else
+#define SIZE_T_FMT_MOD "l" /* printf supports %ld */
+#define SIZE_T_FMT_CAST long
+#endif
+
 union file_extras {
 	int32 num;
 	uint32 unum;
+#ifdef PTRS_ARE_32
+	const char* ptr;
+#endif
+};
+
+union file_extras64 {
+	int64 num;
+#ifdef PTRS_ARE_64
+	const char* ptr;
+#endif
 };
 
 struct file_struct {
@@ -708,25 +803,42 @@ struct file_struct {
 	uint32 len32;		/* Lowest 32 bits of the file's length */
 	uint16 mode;		/* The item's type and permissions */
 	uint16 flags;		/* The FLAG_* bits for this item */
-	const char basename[1];	/* The basename (AKA filename) follows */
+#ifdef USE_FLEXIBLE_ARRAY
+	const char basename[];	/* The basename (AKA filename) follows */
+#else
+	const char basename[1];	/* A kluge that should work like a flexible array */
+#endif
 };
 
 extern int file_extra_cnt;
 extern int inc_recurse;
+extern int atimes_ndx;
+extern int crtimes_ndx;
+extern int pathname_ndx;
+extern int depth_ndx;
 extern int uid_ndx;
 extern int gid_ndx;
 extern int acls_ndx;
 extern int xattrs_ndx;
+extern int file_sum_extra_cnt;
 
+#ifdef USE_FLEXIBLE_ARRAY
+#define FILE_STRUCT_LEN (sizeof (struct file_struct))
+#else
 #define FILE_STRUCT_LEN (offsetof(struct file_struct, basename))
+#endif
 #define EXTRA_LEN (sizeof (union file_extras))
-#define PTR_EXTRA_CNT ((sizeof (char *) + EXTRA_LEN - 1) / EXTRA_LEN)
 #define DEV_EXTRA_CNT 2
 #define DIRNODE_EXTRA_CNT 3
-#define SUM_EXTRA_CNT ((MAX_DIGEST_LEN + EXTRA_LEN - 1) / EXTRA_LEN)
+#define EXTRA64_CNT ((sizeof (union file_extras64) + EXTRA_LEN - 1) / EXTRA_LEN)
+#define SUM_EXTRA_CNT file_sum_extra_cnt
 
 #define REQ_EXTRA(f,ndx) ((union file_extras*)(f) - (ndx))
 #define OPT_EXTRA(f,bump) ((union file_extras*)(f) - file_extra_cnt - 1 - (bump))
+
+/* These are guaranteed to be allocated first in the array so that they
+ * are aligned for direct int64-pointer access. */
+#define REQ_EXTRA64(f,ndx) ((union file_extras64*)REQ_EXTRA(f,ndx))
 
 #define NSEC_BUMP(f) ((f)->flags & FLAG_MOD_NSEC ? 1 : 0)
 #define LEN64_BUMP(f) ((f)->flags & FLAG_LENGTH64 ? 1 : 0)
@@ -738,20 +850,25 @@ extern int xattrs_ndx;
 #if SIZEOF_INT64 < 8
 #define F_LENGTH(f) ((int64)(f)->len32)
 #else
-#define F_LENGTH(f) ((int64)(f)->len32 + ((f)->flags & FLAG_LENGTH64 \
-		   ? (int64)OPT_EXTRA(f, NSEC_BUMP(f))->unum << 32 : 0))
+#define F_HIGH_LEN(f) (OPT_EXTRA(f, NSEC_BUMP(f))->unum)
+#define F_LENGTH(f) ((int64)(f)->len32 + ((f)->flags & FLAG_LENGTH64 ? (int64)F_HIGH_LEN(f) << 32 : 0))
 #endif
 
-#define F_MOD_NSEC(f) ((f)->flags & FLAG_MOD_NSEC ? OPT_EXTRA(f, 0)->unum : 0)
+#define F_MOD_NSEC(f) OPT_EXTRA(f, 0)->unum
+#define F_MOD_NSEC_or_0(f) ((f)->flags & FLAG_MOD_NSEC ? F_MOD_NSEC(f) : 0)
 
 /* If there is a symlink string, it is always right after the basename */
 #define F_SYMLINK(f) ((f)->basename + strlen((f)->basename) + 1)
 
 /* The sending side always has this available: */
-#define F_PATHNAME(f) (*(const char**)REQ_EXTRA(f, PTR_EXTRA_CNT))
+#ifdef PTRS_ARE_32
+#define F_PATHNAME(f) REQ_EXTRA(f, pathname_ndx)->ptr
+#else
+#define F_PATHNAME(f) REQ_EXTRA64(f, pathname_ndx)->ptr
+#endif
 
 /* The receiving side always has this available: */
-#define F_DEPTH(f) REQ_EXTRA(f, 1)->num
+#define F_DEPTH(f) REQ_EXTRA(f, depth_ndx)->num
 
 /* When the associated option is on, all entries will have these present: */
 #define F_OWNER(f) REQ_EXTRA(f, uid_ndx)->unum
@@ -759,6 +876,8 @@ extern int xattrs_ndx;
 #define F_ACL(f) REQ_EXTRA(f, acls_ndx)->num
 #define F_XATTR(f) REQ_EXTRA(f, xattrs_ndx)->num
 #define F_NDX(f) REQ_EXTRA(f, unsort_ndx)->num
+#define F_ATIME(f) REQ_EXTRA64(f, atimes_ndx)->num
+#define F_CRTIME(f) REQ_EXTRA64(f, crtimes_ndx)->num
 
 /* These items are per-entry optional: */
 #define F_HL_GNUM(f) OPT_EXTRA(f, START_BUMP(f))->num /* non-dirs */
@@ -800,8 +919,9 @@ extern int xattrs_ndx;
  * Start the flist array at FLIST_START entries and grow it
  * by doubling until FLIST_LINEAR then grow by FLIST_LINEAR
  */
-#define FLIST_START	(32 * 1024)
-#define FLIST_LINEAR	(FLIST_START * 512)
+#define FLIST_START		(32)
+#define FLIST_START_LARGE	(32 * 1024)
+#define FLIST_LINEAR		(FLIST_START_LARGE * 512)
 
 /*
  * Extent size for allocation pools: A minimum size of 128KB
@@ -898,6 +1018,7 @@ typedef struct filter_struct {
 		int slash_cnt;
 		struct filter_list_struct *mergelist;
 	} u;
+	uchar elide;
 } filter_rule;
 
 typedef struct filter_list_struct {
@@ -977,8 +1098,18 @@ typedef struct {
 
 typedef struct {
 	char name_type;
-	char fname[1]; /* has variable size */
+#ifdef USE_FLEXIBLE_ARRAY
+	char fname[]; /* has variable size */
+#else
+	char fname[1]; /* A kluge that should work like a flexible array */
+#endif
 } relnamecache;
+
+#ifdef USE_FLEXIBLE_ARRAY
+#define RELNAMECACHE_LEN (sizeof (relnamecache))
+#else
+#define RELNAMECACHE_LEN (offsetof(relnamecache, fname))
+#endif
 
 #include "byteorder.h"
 #include "lib/mdigest.h"
@@ -1001,6 +1132,7 @@ typedef struct {
 
 typedef struct {
     STRUCT_STAT st;
+    time_t crtime;
 #ifdef SUPPORT_ACLS
     struct rsync_acl *acc_acl; /* access ACL */
     struct rsync_acl *def_acl; /* default ACL */
@@ -1013,7 +1145,39 @@ typedef struct {
 #define ACL_READY(sx) ((sx).acc_acl != NULL)
 #define XATTR_READY(sx) ((sx).xattr != NULL)
 
+#define CLVL_NOT_SPECIFIED INT_MIN
+
+#define CPRES_AUTO (-1)
+#define CPRES_NONE 0
+#define CPRES_ZLIB 1
+#define CPRES_ZLIBX 2
+#define CPRES_LZ4 3
+#define CPRES_ZSTD 4
+
+#define NSTR_CHECKSUM 0
+#define NSTR_COMPRESS 1
+
+struct name_num_item {
+	int num, flags;
+	const char *name;
+	struct name_num_item *main_nni;
+};
+
+struct name_num_obj {
+	const char *type;
+	struct name_num_item *negotiated_nni;
+	uchar *saw;
+	int saw_len;
+	struct name_num_item *list;
+};
+
+#ifdef EXTERNAL_ZLIB
+#define read_buf read_buf_
+#endif
+
+#ifndef __cplusplus
 #include "proto.h"
+#endif
 
 #ifndef SUPPORT_XATTRS
 #define x_stat(fn,fst,xst) do_stat(fn,fst)
@@ -1039,7 +1203,6 @@ int vsnprintf(char *str, size_t count, const char *fmt, va_list args);
 #define snprintf rsync_snprintf
 int snprintf(char *str, size_t count, const char *fmt,...);
 #endif
-
 
 #ifndef HAVE_STRERROR
 extern char *sys_errlist[];
@@ -1170,10 +1333,6 @@ extern int errno;
 #define IS_SPECIAL(mode) (S_ISSOCK(mode) || S_ISFIFO(mode))
 #define IS_DEVICE(mode) (S_ISCHR(mode) || S_ISBLK(mode))
 
-#define PRESERVE_FILE_TIMES	(1<<0)
-#define PRESERVE_DIR_TIMES	(1<<1)
-#define PRESERVE_LINK_TIMES	(1<<2)
-
 /* Initial mask on permissions given to temporary files.  Mask off setuid
      bits and group access because of potential race-condition security
      holes, and mask other access because mode 707 is bizarre */
@@ -1182,12 +1341,22 @@ extern int errno;
 /* handler for null strings in printf format */
 #define NS(s) ((s)?(s):"<NULL>")
 
+extern char *do_calloc;
+
 /* Convenient wrappers for malloc and realloc.  Use them. */
-#define new(type) ((type*)malloc(sizeof (type)))
-#define new0(type) ((type*)calloc(1, sizeof (type)))
-#define new_array(type, num) ((type*)_new_array((num), sizeof (type), 0))
-#define new_array0(type, num) ((type*)_new_array((num), sizeof (type), 1))
-#define realloc_array(ptr, type, num) ((type*)_realloc_array((ptr), sizeof(type), (num)))
+#define new(type) ((type*)my_alloc(NULL, sizeof (type), 1, __FILE__, __LINE__))
+#define new0(type) ((type*)my_alloc(do_calloc, sizeof (type), 1, __FILE__, __LINE__))
+#define realloc_buf(ptr, num) my_alloc((ptr), (num), 1, __FILE__, __LINE__)
+
+#define new_array(type, num) ((type*)my_alloc(NULL, (num), sizeof (type), __FILE__, __LINE__))
+#define new_array0(type, num) ((type*)my_alloc(do_calloc, (num), sizeof (type), __FILE__, __LINE__))
+#define realloc_array(ptr, type, num) ((type*)my_alloc((ptr), (num), sizeof (type), __FILE__, __LINE__))
+
+#undef strdup
+#define strdup(s) my_strdup(s, __FILE__, __LINE__)
+
+#define out_of_memory(msg) _out_of_memory(msg, __FILE__, __LINE__)
+#define overflow_exit(msg) _overflow_exit(msg, __FILE__, __LINE__)
 
 /* use magic gcc attributes to catch format errors */
  void rprintf(enum logcode , const char *, ...)
@@ -1253,7 +1422,8 @@ extern short info_levels[], debug_levels[];
 #define INFO_MISC (INFO_FLIST+1)
 #define INFO_MOUNT (INFO_MISC+1)
 #define INFO_NAME (INFO_MOUNT+1)
-#define INFO_PROGRESS (INFO_NAME+1)
+#define INFO_NONREG (INFO_NAME+1)
+#define INFO_PROGRESS (INFO_NONREG+1)
 #define INFO_REMOVE (INFO_PROGRESS+1)
 #define INFO_SKIP (INFO_REMOVE+1)
 #define INFO_STATS (INFO_SKIP+1)
@@ -1279,7 +1449,8 @@ extern short info_levels[], debug_levels[];
 #define DEBUG_HLINK (DEBUG_HASH+1)
 #define DEBUG_ICONV (DEBUG_HLINK+1)
 #define DEBUG_IO (DEBUG_ICONV+1)
-#define DEBUG_OWN (DEBUG_IO+1)
+#define DEBUG_NSTR (DEBUG_IO+1)
+#define DEBUG_OWN (DEBUG_NSTR+1)
 #define DEBUG_PROTO (DEBUG_OWN+1)
 #define DEBUG_RECV (DEBUG_PROTO+1)
 #define DEBUG_SEND (DEBUG_RECV+1)
@@ -1301,4 +1472,15 @@ char *getpass(const char *prompt);
 
 #ifdef MAINTAINER_MODE
 const char *get_panic_action(void);
+#endif
+
+#define NOISY_DEATH(msg) do { \
+    fprintf(stderr, "%s in %s at line %d\n", msg, __FILE__, __LINE__); \
+    exit_cleanup(RERR_UNSUPPORTED); \
+} while (0)
+
+#ifdef HAVE_MALLINFO2
+#define MEM_ALLOC_INFO mallinfo2
+#elif defined HAVE_MALLINFO
+#define MEM_ALLOC_INFO mallinfo
 #endif

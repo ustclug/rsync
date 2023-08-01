@@ -1,6 +1,6 @@
-#! /bin/sh
+#!/bin/sh
 
-# Copyright (C) 2005 by Wayne Davison <wayned@samba.org>
+# Copyright (C) 2005-2022 Wayne Davison
 
 # This program is distributable under the terms of the GNU GPL (see
 # COPYING).
@@ -12,7 +12,7 @@
 mkdir "$fromdir"
 mkdir "$todir"
 
-cp -p "$srcdir"/rsync.c "$fromdir"/rsync.c
+cp_p "$srcdir"/rsync.c "$fromdir"/rsync.c
 cp_touch "$fromdir"/rsync.c "$todir"/rsync2.c
 sleep 1
 

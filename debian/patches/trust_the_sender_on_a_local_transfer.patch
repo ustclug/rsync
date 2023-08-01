@@ -1,0 +1,34 @@
+From f1e3434b59dd3dfbf4b6faf8dbc81dd068adc305 Mon Sep 17 00:00:00 2001
+From: Wayne Davison <wayne@opencoder.net>
+Date: Thu, 1 Dec 2022 20:16:51 -0800
+Subject: [PATCH] Trust the sender on a local transfer.
+
+---
+ main.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/main.c b/main.c
+index 9f36904d..0c60b86d 100644
+--- a/main.c
++++ b/main.c
+@@ -89,6 +89,8 @@ extern int backup_dir_len;
+ extern int basis_dir_cnt;
+ extern int default_af_hint;
+ extern int stdout_format_has_i;
++extern int trust_sender_filter;
++extern int trust_sender_args;
+ extern struct stats stats;
+ extern char *stdout_format;
+ extern char *logfile_format;
+@@ -1471,8 +1473,10 @@ static int start_client(int argc, char *argv[])
+ 	}
+ 
+ 	/* A local transfer doesn't unbackslash anything, so leave the args alone. */
+-	if (local_server)
++	if (local_server) {
+ 		old_style_args = 2;
++		trust_sender_args = trust_sender_filter = 1;
++	}
+ 
+ 	if (!rsync_port && remote_argc && !**remote_argv) /* Turn an empty arg into a dot dir. */
+ 		*remote_argv = ".";

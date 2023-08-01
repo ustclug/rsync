@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1998 Andrew Tridgell
  * Copyright (C) 2002 Martin Pool
- * Copyright (C) 2004-2015 Wayne Davison
+ * Copyright (C) 2004-2020 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,12 +26,12 @@
 #define ENODATA EAGAIN
 #endif
 
-/* We want all reads to be aligned on 1K boundries. */
-#define ALIGN_BOUNDRY 1024
+/* We want all reads to be aligned on 1K boundaries. */
+#define ALIGN_BOUNDARY 1024
 /* How far past the boundary is an offset? */
-#define ALIGNED_OVERSHOOT(oft) ((oft) & (ALIGN_BOUNDRY-1))
+#define ALIGNED_OVERSHOOT(oft) ((oft) & (ALIGN_BOUNDARY-1))
 /* Round up a length to the next boundary */
-#define ALIGNED_LENGTH(len) ((((len) - 1) | (ALIGN_BOUNDRY-1)) + 1)
+#define ALIGNED_LENGTH(len) ((((len) - 1) | (ALIGN_BOUNDARY-1)) + 1)
 
 extern int sparse_files;
 
@@ -43,6 +43,8 @@ static OFF_T sparse_past_write = 0;
 int sparse_end(int f, OFF_T size)
 {
 	int ret;
+
+	sparse_past_write = 0;
 
 	if (!sparse_seek)
 		return 0;
@@ -155,8 +157,6 @@ int write_file(int f, int use_seek, OFF_T offset, const char *buf, int len)
 				wf_writeBufSize = WRITE_SIZE * 8;
 				wf_writeBufCnt  = 0;
 				wf_writeBuf = new_array(char, wf_writeBufSize);
-				if (!wf_writeBuf)
-					out_of_memory("write_file");
 			}
 			r1 = (int)MIN((size_t)len, wf_writeBufSize - wf_writeBufCnt);
 			if (r1) {
@@ -215,8 +215,7 @@ struct map_struct *map_file(int fd, OFF_T len, int32 read_size, int32 blk_size)
 {
 	struct map_struct *map;
 
-	if (!(map = new0(struct map_struct)))
-		out_of_memory("map_file");
+	map = new0(struct map_struct);
 
 	if (blk_size && (read_size % blk_size))
 		read_size += blk_size - (read_size % blk_size);
@@ -259,8 +258,6 @@ char *map_ptr(struct map_struct *map, OFF_T offset, int32 len)
 	/* make sure we have allocated enough memory for the window */
 	if (window_size > map->p_size) {
 		map->p = realloc_array(map->p, char, window_size);
-		if (!map->p)
-			out_of_memory("map_ptr");
 		map->p_size = window_size;
 	}
 
@@ -322,7 +319,9 @@ int unmap_file(struct map_struct *map)
 		map->p = NULL;
 	}
 	ret = map->status;
-	memset(map, 0, sizeof map[0]);
+#if 0 /* I don't think we really need this. */
+	force_memzero(map, sizeof map[0]);
+#endif
 	free(map);
 
 	return ret;

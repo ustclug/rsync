@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1996 Andrew Tridgell
  * Copyright (C) 1996 Paul Mackerras
- * Copyright (C) 2003-2015 Wayne Davison
+ * Copyright (C) 2003-2022 Wayne Davison
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +32,9 @@ extern int preserve_acls;
 extern int preserve_xattrs;
 extern int preserve_perms;
 extern int preserve_executability;
-extern int preserve_times;
+extern int preserve_mtimes;
+extern int omit_dir_times;
+extern int omit_link_times;
 extern int am_root;
 extern int am_server;
 extern int am_daemon;
@@ -43,6 +45,7 @@ extern int am_starting_up;
 extern int allow_8bit_chars;
 extern int protocol_version;
 extern int got_kill_signal;
+extern int called_from_signal_handler;
 extern int inc_recurse;
 extern int inplace;
 extern int flist_eof;
@@ -55,6 +58,14 @@ extern struct chmod_mode_struct *daemon_chmod_modes;
 #ifdef ICONV_OPTION
 extern char *iconv_opt;
 #endif
+
+#define UPDATED_OWNER (1<<0)
+#define UPDATED_GROUP (1<<1)
+#define UPDATED_MTIME (1<<2)
+#define UPDATED_ATIME (1<<3)
+#define UPDATED_ACLS  (1<<4)
+#define UPDATED_MODE  (1<<5)
+#define UPDATED_CRTIME (1<<6)
 
 #ifdef ICONV_CONST
 iconv_t ic_chck = (iconv_t)-1;
@@ -308,8 +319,7 @@ void send_protected_args(int fd, char *args[])
 #endif
 }
 
-int read_ndx_and_attrs(int f_in, int f_out, int *iflag_ptr, uchar *type_ptr,
-		       char *buf, int *len_ptr)
+int read_ndx_and_attrs(int f_in, int f_out, int *iflag_ptr, uchar *type_ptr, char *buf, int *len_ptr)
 {
 	int len, iflags = 0;
 	struct file_list *flist;
@@ -458,6 +468,21 @@ mode_t dest_mode(mode_t flist_mode, mode_t stat_mode, int dflt_perms,
 	return new_mode;
 }
 
+static int same_mtime(struct file_struct *file, STRUCT_STAT *st, int extra_accuracy)
+{
+#ifdef ST_MTIME_NSEC
+	uint32 f1_nsec = F_MOD_NSEC_or_0(file);
+	uint32 f2_nsec = (uint32)st->ST_MTIME_NSEC;
+#else
+	uint32 f1_nsec = 0, f2_nsec = 0;
+#endif
+
+	if (extra_accuracy) /* ignore modify_window when setting the time after a transfer or checksum check */
+		return file->modtime == st->st_mtime && f1_nsec == f2_nsec;
+
+	return same_time(file->modtime, f1_nsec, st->st_mtime , f2_nsec);
+}
+
 int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 		   const char *fnamecmp, int flags)
 {
@@ -523,8 +548,8 @@ int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 				/* We shouldn't have attempted to change uid
 				 * or gid unless have the privilege. */
 				rsyserr(FERROR_XFER, errno, "%s %s failed",
-				    change_uid ? "chown" : "chgrp",
-				    full_fname(fname));
+					change_uid ? "chown" : "chgrp",
+					full_fname(fname));
 				goto cleanup;
 			}
 			if (uid == (uid_t)-1 && sxp->st.st_uid != (uid_t)-1)
@@ -539,7 +564,10 @@ int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 					  keep_dirlinks && S_ISDIR(sxp->st.st_mode));
 			}
 		}
-		updated = 1;
+		if (change_uid)
+			updated |= UPDATED_OWNER;
+		if (change_gid)
+			updated |= UPDATED_GROUP;
 	}
 
 #ifdef SUPPORT_XATTRS
@@ -549,38 +577,78 @@ int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 		set_xattr(fname, file, fnamecmp, sxp);
 #endif
 
-	if (!preserve_times
-	 || (!(preserve_times & PRESERVE_DIR_TIMES) && S_ISDIR(sxp->st.st_mode))
-	 || (!(preserve_times & PRESERVE_LINK_TIMES) && S_ISLNK(sxp->st.st_mode)))
-		flags |= ATTRS_SKIP_MTIME;
-	if (!(flags & ATTRS_SKIP_MTIME)
-	 && (sxp->st.st_mtime != file->modtime
+	if ((omit_dir_times && S_ISDIR(sxp->st.st_mode))
+	 || (omit_link_times && S_ISLNK(sxp->st.st_mode)))
+		flags |= ATTRS_SKIP_MTIME | ATTRS_SKIP_ATIME | ATTRS_SKIP_CRTIME;
+	else {
+		if (!preserve_mtimes)
+			flags |= ATTRS_SKIP_MTIME;
+		if (!atimes_ndx || S_ISDIR(sxp->st.st_mode))
+			flags |= ATTRS_SKIP_ATIME;
+		/* Don't set the creation date on the root folder of an HFS+ volume. */
+		if (sxp->st.st_ino == 2 && S_ISDIR(sxp->st.st_mode))
+			flags |= ATTRS_SKIP_CRTIME;
+	}
+	if (sxp != &sx2)
+		memcpy(&sx2.st, &sxp->st, sizeof sx2.st);
+	if (!(flags & ATTRS_SKIP_MTIME) && !same_mtime(file, &sxp->st, flags & ATTRS_ACCURATE_TIME)) {
+		sx2.st.st_mtime = file->modtime;
 #ifdef ST_MTIME_NSEC
-	  || (NSEC_BUMP(file) && (uint32)sxp->st.ST_MTIME_NSEC != F_MOD_NSEC(file))
+		sx2.st.ST_MTIME_NSEC = F_MOD_NSEC_or_0(file);
 #endif
-	  )) {
-		int ret = set_modtime(fname, file->modtime, F_MOD_NSEC(file), sxp->st.st_mode);
+		updated |= UPDATED_MTIME;
+	}
+	if (!(flags & ATTRS_SKIP_ATIME)) {
+		time_t file_atime = F_ATIME(file);
+		if (flags & ATTRS_ACCURATE_TIME || !same_time(sxp->st.st_atime, 0, file_atime, 0)) {
+			sx2.st.st_atime = file_atime;
+#ifdef ST_ATIME_NSEC
+			sx2.st.ST_ATIME_NSEC = 0;
+#endif
+			updated |= UPDATED_ATIME;
+		}
+	}
+#ifdef SUPPORT_CRTIMES
+	if (crtimes_ndx && !(flags & ATTRS_SKIP_CRTIME)) {
+		time_t file_crtime = F_CRTIME(file);
+		if (sxp->crtime == 0)
+			sxp->crtime = get_create_time(fname, &sxp->st);
+		if (!same_time(sxp->crtime, 0L, file_crtime, 0L)) {
+			if (
+#ifdef HAVE_GETATTRLIST
+			     do_setattrlist_crtime(fname, file_crtime) == 0
+#elif defined __CYGWIN__
+			     do_SetFileTime(fname, file_crtime) == 0
+#else
+#error Unknown crtimes implementation
+#endif
+			)
+				updated |= UPDATED_CRTIME;
+		}
+	}
+#endif
+	if (updated & (UPDATED_MTIME|UPDATED_ATIME)) {
+		int ret = set_times(fname, &sx2.st);
 		if (ret < 0) {
-			rsyserr(FERROR_XFER, errno, "failed to set times on %s",
-				full_fname(fname));
+			rsyserr(FERROR_XFER, errno, "failed to set times on %s", full_fname(fname));
 			goto cleanup;
 		}
-		if (ret == 0) /* ret == 1 if symlink could not be set */
-			updated = 1;
-		else
+		if (ret > 0) { /* ret == 1 if symlink could not be set */
+			updated &= ~(UPDATED_MTIME|UPDATED_ATIME);
 			file->flags |= FLAG_TIME_FAILED;
+		}
 	}
 
 #ifdef SUPPORT_ACLS
 	/* It's OK to call set_acl() now, even for a dir, as the generator
 	 * will enable owner-writability using chmod, if necessary.
-	 * 
+	 *
 	 * If set_acl() changes permission bits in the process of setting
 	 * an access ACL, it changes sxp->st.st_mode so we know whether we
 	 * need to chmod(). */
 	if (preserve_acls && !S_ISLNK(new_mode)) {
 		if (set_acl(fname, file, sxp, new_mode) > 0)
-			updated = 1;
+			updated |= UPDATED_ACLS;
 	}
 #endif
 
@@ -594,7 +662,7 @@ int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 			goto cleanup;
 		}
 		if (ret == 0) /* ret == 1 if symlink could not be set */
-			updated = 1;
+			updated |= UPDATED_MODE;
 	}
 #endif
 
@@ -613,6 +681,8 @@ int set_file_attrs(const char *fname, struct file_struct *file, stat_x *sxp,
 /* This is only called for SIGINT, SIGHUP, and SIGTERM. */
 void sig_int(int sig_num)
 {
+	called_from_signal_handler = 1;
+
 	/* KLUGE: if the user hits Ctrl-C while ssh is prompting
 	 * for a password, then our cleanup's sending of a SIGUSR1
 	 * signal to all our children may kill ssh before it has a
@@ -636,6 +706,7 @@ void sig_int(int sig_num)
 	 * we didn't already set the flag. */
 	if (!got_kill_signal && (am_server || am_receiver)) {
 		got_kill_signal = sig_num;
+		called_from_signal_handler = 0;
 		return;
 	}
 
@@ -646,7 +717,7 @@ void sig_int(int sig_num)
  * attributes (e.g. permissions, ownership, etc.).  If the robust_rename()
  * call is forced to copy the temp file and partialptr is both non-NULL and
  * not an absolute path, we stage the file into the partial-dir and then
- * rename it into place.  This returns 1 on succcess or 0 on failure. */
+ * rename it into place.  This returns 1 on success or 0 on failure. */
 int finish_transfer(const char *fname, const char *fnametmp,
 		    const char *fnamecmp, const char *partialptr,
 		    struct file_struct *file, int ok_to_set_time,
@@ -672,7 +743,7 @@ int finish_transfer(const char *fname, const char *fnametmp,
 
 	/* Change permissions before putting the file into place. */
 	set_file_attrs(fnametmp, file, NULL, fnamecmp,
-		       ok_to_set_time ? 0 : ATTRS_SKIP_MTIME);
+		       ok_to_set_time ? ATTRS_ACCURATE_TIME : ATTRS_SKIP_MTIME | ATTRS_SKIP_ATIME | ATTRS_SKIP_CRTIME);
 
 	/* move tmp file over real file */
 	if (DEBUG_GTE(RECV, 1))
@@ -697,7 +768,7 @@ int finish_transfer(const char *fname, const char *fnametmp,
 
   do_set_file_attrs:
 	set_file_attrs(fnametmp, file, NULL, fnamecmp,
-		       ok_to_set_time ? 0 : ATTRS_SKIP_MTIME);
+		       ok_to_set_time ? ATTRS_ACCURATE_TIME : ATTRS_SKIP_MTIME | ATTRS_SKIP_ATIME | ATTRS_SKIP_CRTIME);
 
 	if (temp_copy_name) {
 		if (do_rename(fnametmp, fname) < 0) {

@@ -1,0 +1,73 @@
+Author: Samuel Henrique <samueloph@debian.org>
+Description: Skip "devices" test as it fails on kfreebsd and hurd
+ Error log:
+ /----- devices log follows
+ Testing for symlinks using 'test -h'
+ Let's try re-running the script under fakeroot...
+ Testing for symlinks using 'test -h'
+ cD+++++++++ block
+ cD+++++++++ block2
+ default_perms_for_dir: sys_acl_get_file(., ACL_TYPE_DEFAULT): Operation not supported, falling back on umask
+ cDc.T...... block3
+ sending incremental file list
+ delta-transmission disabled for local transfer or --whole-file
+ .d..t...... ./
+ cDc.t...... block
+ cDc........ block2
+ cD+++++++++ block3
+ hD+++++++++ block3.5 => block3
+ cD+++++++++ char
+ cD+++++++++ char2
+ cD+++++++++ char3
+ cS+++++++++ fifo
+ total: matches=0  hash_hits=0  false_alarms=0 data=0
+
+ sent 160 bytes  received 117 bytes  554.00 bytes/sec
+ total size is 0  speedup is 0.00
+ check how the directory listings compare with diff:
+
+ + + /<<PKGBUILDDIR>>/rsynctee -aii /<<PKGBUILDDIR>>/testtmp/devices/rsync.out --link-dest=/<<PKGBUILDDIR>>/testtmp/devices/to
+  /<<PKGBUILDDIR>>/testtmp/devices/from/ /<<PKGBUILDDIR>>/testtmp/devices/chk/
+ rsync: failed to hard-link /<<PKGBUILDDIR>>/testtmp/devices/to/fifo with fifo: Invalid cross-device link (1073741842)
+ cd          ./
+ hD          block
+ hD          block2
+ hD          block3
+ hD          block3.5
+ hD          char
+ hD          char2
+ hD          char3
+ cSc........ fifo
+ rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1207) [sender=3.1.3]
+ + cat
+ + diff -u /<<PKGBUILDDIR>>/testtmp/devices/rsync.chk /<<PKGBUILDDIR>>/testtmp/devices/rsync.out
+ /--- /<<PKGBUILDDIR>>/testtmp/devices/rsync.chk	2019-10-15 01:26:43.000000000 +0000
+ /+++ /<<PKGBUILDDIR>>/testtmp/devices/rsync.out	2019-10-15 01:26:43.000000000 +0000
+ @@ -6,4 +6,4 @@
+  hD          char
+  hD          char2
+  hD          char3
+ -hS          fifo
+ +cSc........ fifo
+ + test_fail test 5 failed
+ + echo test 5 failed
+ test 5 failed
+ + exit 1
+ /bin/fakeauth: Error 1 for child 7541
+ /bin/settrans: Error 1 for child 7540
+ ----- devices log ends
+ FAIL    devices
+Index: rsync/testsuite/devices.test
+===================================================================
+--- rsync.orig/testsuite/devices.test
++++ rsync/testsuite/devices.test
+@@ -9,6 +9,9 @@
+ 
+ . "$suitedir/rsync.fns"
+ 
++# Debian patch to skip this test as it fails on kfreebsd and hurd
++test_skipped "Patched by Debian to skip as it fails on kfreebsd and hurd"
++
+ # Build some hardlinks
+ 
+ case $0 in

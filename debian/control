@@ -1,18 +1,35 @@
 Source: rsync-huai
 Section: net
 Priority: optional
-Maintainer: Shengjing Zhu <i@zhsj.me>
-Uploaders:
- Boyuan Yang <073plan@gmail.com>
-Build-Depends: libpopt-dev, libacl1-dev, libattr1-dev, yodl, debhelper (>= 9), autotools-dev, autoconf, automake, libtool
-Standards-Version: 3.9.8
-Homepage: http://github.com/tuna/rsync
-Vcs-Git: https://github.com/ustclug/rsync.git
-Vcs-Browser: https://github.com/ustclug/rsync
+Maintainer: Paul Slootman <paul@debian.org>
+Uploaders: Samuel Henrique <samueloph@debian.org>
+Build-Depends: debhelper-compat (= 13),
+               libacl1-dev,
+               libpopt-dev,
+               liblz4-dev,
+               libxxhash-dev (>= 0.8),
+               libzstd-dev (>= 1.4),
+               zlib1g-dev,
+               libssl-dev,
+               python3:native,
+               python3-cmarkgfm:native
+Standards-Version: 4.6.1
+Rules-Requires-Root: no
+Homepage: https://rsync.samba.org/
+Vcs-Git: https://salsa.debian.org/debian/rsync.git
+Vcs-Browser: https://salsa.debian.org/debian/rsync
 
 Package: rsync-huai
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Multi-Arch: foreign
+Pre-Depends: ${misc:Pre-Depends}
+Depends: lsb-base,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Suggests: openssh-client,
+          openssh-server,
+          python3,
+          python3-braceexpand
 Description: fast, versatile, remote (and local) file-copying tool
  rsync is a fast and versatile file-copying tool which can copy locally
  and to/from a remote host. It offers many options to control its behavior,
