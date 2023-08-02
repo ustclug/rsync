@@ -88,7 +88,7 @@ cp_touch "$fromdir/foo/file3" "$chkdir/foo"
 dirs='foo foo/bar'
 files='file0 file1 file2 foo/file3 file4 foo/bar/file5'
 
-uid_gid=`"$TOOLDIR/tls" "$fromdir/foo" | sed 's/^.* \([0-9][0-9]*\)\.\([0-9][0-9]*\) .*/\1:\2/'`
+uid_gid=`"$TOOLDIR/tls-huai" "$fromdir/foo" | sed 's/^.* \([0-9][0-9]*\)\.\([0-9][0-9]*\) .*/\1:\2/'`
 
 cd "$fromdir"
 

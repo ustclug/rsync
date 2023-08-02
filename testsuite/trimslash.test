@@ -9,7 +9,7 @@
 
 . "$suitedir/rsync.fns"
 
-"$TOOLDIR/trimslash" "/usr/local/bin" "/usr/local/bin/" "/usr/local/bin///" \
+"$TOOLDIR/trimslash-huai" "/usr/local/bin" "/usr/local/bin/" "/usr/local/bin///" \
 	"//a//" "////" \
         "/Users/Weird Macintosh Name/// Ooh, translucent plastic/" \
 	> "$scratchdir/slash.out"

@@ -24,7 +24,6 @@ aclocal.m4
 /getgroups
 /gmon.out
 /rsync
-/rsync-ssl
 /stunnel-rsync
 /stunnel-rsyncd.conf
 /shconfig
@@ -46,3 +45,4 @@ aclocal.m4
 /testsuite/xattrs-hlink.test
 /patches
 .deps
+/*-huai

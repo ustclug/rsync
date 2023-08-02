@@ -284,7 +284,7 @@ for testscript in $suitedir/$whichtests; do
     esac
 
     set +e
-    "$TOOLDIR/"testrun $RUNSHFLAGS "$testscript" >"$scratchdir/test.log" 2>&1
+    "$TOOLDIR/"testrun-huai $RUNSHFLAGS "$testscript" >"$scratchdir/test.log" 2>&1
     result=$?
     set -e
 
