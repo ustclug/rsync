@@ -106,7 +106,8 @@ endif
 	$(INSTALL_SCRIPT) debian/postinst debian/tmp/DEBIAN/
 	$(INSTALL_SCRIPT) debian/prerm    debian/tmp/DEBIAN/
 	$(INSTALL_SCRIPT) debian/postrm   debian/tmp/DEBIAN/
-	$(INSTALL_FILE) debian/buildtree/packaging/systemd/rsync.service debian/tmp/lib/systemd/system/
+	$(INSTALL_FILE) debian/buildtree/packaging/systemd/rsync-huai.service debian/tmp/lib/systemd/system/
+	$(INSTALL_FILE) debian/buildtree/packaging/systemd/rsync-huai@.service debian/tmp/lib/systemd/system/
 	$(INSTALL_FILE) debian/default  debian/tmp/etc/default/rsync
 	$(INSTALL_SCRIPT) debian/init.d debian/tmp/etc/init.d/rsync
 	$(INSTALL_FILE) debian/lintian.overrides  debian/tmp/usr/share/lintian/overrides/rsync
