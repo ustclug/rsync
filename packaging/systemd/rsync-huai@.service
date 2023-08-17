@@ -1,13 +1,14 @@
 [Unit]
 Description=fast remote file copy program daemon
 After=network.target
-ConditionPathExists=/etc/rsyncd-huai/%i.conf
+ConditionPathExists=/etc/rsyncd-huai/rsyncd-%i.conf
 
 [Service]
-ExecStart=-/usr/bin/rsync-huai --daemon --nodetach --config=/etc/rsyncd-huai/%i.conf
+ExecStart=-/usr/bin/rsync-huai --daemon --nodetach --config=/etc/rsyncd-huai/rsyncd-%i.conf
 StandardInput=socket
 StandardOutput=inherit
 StandardError=journal
+IOSchedulingClass=idle
 
 # Citing README.md:
 #
