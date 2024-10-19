@@ -422,11 +422,11 @@ void send_files(int f_in, int f_out)
 			close(fd);
 			exit_cleanup(RERR_FILEIO);
 		}
-		if(only_send_attrs){
+		if (only_send_attrs) {
 			close(fd);
 			char temp_file[MAXPATHLEN];
 			const char *dest_dir;
-			const char *env = getenv ("TMPDIR");
+			const char *env = getenv("TMPDIR");
 			dest_dir = (env && *env ? env : "/tmp");
 			int ret = pathjoin(temp_file, MAXPATHLEN, dest_dir, "tmp_XXXXXX");
 			if (ret >= MAXPATHLEN) {
@@ -440,15 +440,8 @@ void send_files(int f_in, int f_out)
 				exit_cleanup(RERR_FILEIO);
 			}
 			unlink(temp_file);
-			unsigned char b[8];
-			uint64_t file_size = st.st_size;
-			for (size_t i = 0; i < 8; i++) {
-				b[i] = file_size & 0xff;
-				file_size >>= 8;
-			}
-			write_buf(fd, (const char *)b, 8);
+			ftruncate(fd, st.st_size);
 			lseek(fd, 0, SEEK_SET);
-			st.st_size = 8;
 		}
 		if (st.st_size) {
 			int32 read_size = MAX(s->blength * 3, MAX_MAP_SIZE);
